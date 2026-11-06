@@ -4,3 +4,4 @@
 *.csv
 __pycache__/
 .pytest_cache/
+trang_da_luu/

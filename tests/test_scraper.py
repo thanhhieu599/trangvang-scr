@@ -253,3 +253,24 @@ def test_bookmarklet_in_browser():
     assert data["2"]["address"].startswith("Số 23F/8")
     assert data["1"]["category"].startswith("Hóa Chất - Sản Xuất")
     assert "Tên công ty" in csv_text and "info@kemic.vn" in csv_text
+
+
+def test_watch_picks_up_new_files(tmp_path):
+    import time as _t
+    folder = tmp_path / "w"
+    folder.mkdir()
+    out = tmp_path / "o.xlsx"
+    store = S.Store(str(tmp_path / "t.db"))
+    f = folder / "a.html"
+    f.write_text(LISTING_SAVED, encoding="utf-8")
+    (folder / "khac.html").write_text("<html>trang khác</html>", encoding="utf-8")
+    old = _t.time() - 10
+    os.utime(f, (old, old))
+    os.utime(folder / "khac.html", (old, old))
+    S.watch(store, str(folder), str(out), once=True)
+    assert out.exists()
+    assert store.db.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 2
+    # Lần quét sau không đọc lại file cũ
+    n = store.db.execute("SELECT COUNT(*) FROM imported_files").fetchone()[0]
+    S.watch(store, str(folder), str(out), once=True)
+    assert store.db.execute("SELECT COUNT(*) FROM imported_files").fetchone()[0] == n

@@ -6,6 +6,33 @@ Lấy **Tên, Địa chỉ, Điện thoại, Email, Website** của các công t
 > **người mở trang như bình thường, công cụ chỉ đọc dữ liệu trên trang đang mở**: Cách A hoặc Cách B.
 > Cách C (máy tự cào) chỉ dùng được với website cho phép truy cập tự động; khi bị chặn, công cụ tự dừng để tránh bị khóa IP.
 
+## Chạy bằng terminal (không cần giao diện)
+
+Terminal chạy nền và theo dõi thư mục `trang_da_luu`. Mỗi khi anh/chị lưu một trang Trang Vàng vào đó (`Ctrl+S`), terminal tự đọc dữ liệu và cập nhật `cong_ty.xlsx` trong vài giây.
+
+```bash
+pip install -r requirements.txt
+```
+```bash
+python scraper.py watch
+```
+
+Trên Windows có thể chạy `chay.bat` thay cho 2 lệnh trên.
+
+Tùy chọn:
+
+```bash
+python scraper.py watch --dir "C:\Users\letha\Downloads" --sector "Hóa chất" --out hoa_chat.xlsx
+```
+
+- `--dir`: thư mục theo dõi. Có thể trỏ thẳng vào thư mục Downloads, công cụ tự bỏ qua file không phải của Trang Vàng.
+- Trang danh sách cho Tên, Địa chỉ, SĐT, Website. Lưu thêm trang chi tiết công ty để có Email, email tự gộp vào đúng công ty.
+- File Excel đang mở thì công cụ lưu tạm sang tên khác, không báo lỗi.
+- Tắt rồi bật lại không đọc lại file cũ, dữ liệu cộng dồn.
+- Xem tổng số: `python scraper.py status`. Xuất lại file: `python scraper.py export --out cong_ty.xlsx`.
+
+Mẹo: trong Chrome vào Cài đặt > Tệp đã tải xuống, chọn thư mục `trang_da_luu`, và lưu bằng **"Webpage, HTML only"** cho nhanh.
+
 ## Cách A (khuyên dùng): Nút thu thập trên Chrome/Edge
 
 Không cần cài Python.

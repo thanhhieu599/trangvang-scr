@@ -419,30 +419,77 @@ def category_name_of(html: str) -> str:
     return page_title(soup)
 
 
-def import_html(store: "Store", folder: str, sector: str = "") -> int:
-    """Đọc mọi file .html/.htm trong thư mục (trang danh sách hoặc trang chi tiết đã lưu)."""
+def list_html_files(folder: str) -> list[str]:
     import glob
     import os
-    files = sorted(glob.glob(os.path.join(folder, "**", "*.htm*"), recursive=True))
+    return sorted(glob.glob(os.path.join(folder, "**", "*.htm*"), recursive=True))
+
+
+def import_file(store: "Store", path: str, sector: str = "") -> int | None:
+    """Đọc 1 file đã lưu. Trả về số công ty, hoặc None nếu không phải trang Trang Vàng."""
+    import os
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        html = fh.read()
+    if "trangvang" not in html.lower():
+        return None
+    base = saved_page_url(html)
+    if LISTING_RE.search(base):  # trang chi tiết 1 công ty
+        companies = [parse_company(html, base)]
+        cat = ""
+    else:                         # trang danh sách phân ngành
+        companies = parse_listing_cards(html, base)
+        cat = category_name_of(html)
+    for c in companies:
+        store.upsert_company(c, sector, cat)
+    log.info("%s: %d công ty", os.path.basename(path), len(companies))
+    return len(companies)
+
+
+def import_html(store: "Store", folder: str, sector: str = "") -> int:
+    """Đọc mọi file .html/.htm trong thư mục (trang danh sách hoặc trang chi tiết đã lưu)."""
+    files = list_html_files(folder)
     if not files:
         log.error("Không thấy file .html nào trong %s", folder)
         return 0
-    total = 0
-    for f in files:
-        with open(f, encoding="utf-8", errors="ignore") as fh:
-            html = fh.read()
-        base = saved_page_url(html)
-        if LISTING_RE.search(base):  # trang chi tiết 1 công ty
-            companies = [parse_company(html, base)]
-            cat = ""
-        else:                         # trang danh sách phân ngành
-            companies = parse_listing_cards(html, base)
-            cat = category_name_of(html)
-        for c in companies:
-            store.upsert_company(c, sector, cat)
-        total += len(companies)
-        log.info("%s: %d công ty", os.path.basename(f), len(companies))
-    return total
+    return sum(import_file(store, f, sector) or 0 for f in files)
+
+
+def watch(store: "Store", folder: str, out: str, sector: str = "", interval: float = 3.0,
+          once: bool = False):
+    """Chạy nền: thấy file .html mới/được lưu lại trong thư mục thì đọc ngay và cập nhật file Excel."""
+    import os
+    os.makedirs(folder, exist_ok=True)
+    store.db.execute("CREATE TABLE IF NOT EXISTS imported_files (path TEXT PRIMARY KEY, mtime REAL)")
+    done = dict(store.db.execute("SELECT path, mtime FROM imported_files").fetchall())
+    log.info("Đang theo dõi thư mục: %s", os.path.abspath(folder))
+    log.info("Lưu trang Trang Vàng (Ctrl+S) vào thư mục này, file Excel tự cập nhật: %s", os.path.abspath(out))
+    log.info("Nhấn Ctrl+C để dừng.")
+    while True:
+        changed = 0
+        for f in list_html_files(folder):
+            try:
+                mtime = os.path.getmtime(f)
+            except OSError:
+                continue
+            if done.get(f) == mtime or time.time() - mtime < 1.5:  # chưa đổi / đang ghi dở
+                continue
+            try:
+                n = import_file(store, f, sector)
+            except Exception as e:
+                log.warning("Không đọc được %s: %s", f, e)
+                n = None
+            done[f] = mtime
+            store.db.execute("INSERT OR REPLACE INTO imported_files VALUES (?,?)", (f, mtime))
+            store.db.commit()
+            if n:
+                changed += n
+        if changed:
+            export(store, out)
+            total = store.db.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
+            log.info(">>> Tổng: %d công ty trong %s", total, out)
+        if once:
+            return
+        time.sleep(interval)
 
 
 # ---------------------------------------------------------------------------
@@ -613,7 +660,13 @@ def export(store: Store, out: str):
         ws.auto_filter.ref = ws.dimensions
         for col, w in zip("ABCDEFGHIJ", (18, 30, 40, 50, 22, 30, 30, 40, 40, 20)):
             ws.column_dimensions[col].width = w
-        wb.save(out)
+        try:
+            wb.save(out)
+        except PermissionError:
+            alt = out[:-5] + datetime.now().strftime("_%H%M%S") + ".xlsx"
+            log.warning("File %s đang mở trong Excel, lưu tạm sang %s", out, alt)
+            wb.save(alt)
+            out = alt
     else:
         with open(out, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig để Excel đọc đúng tiếng Việt
             w = csv.writer(f)
@@ -650,6 +703,13 @@ def main(argv=None):
     i.add_argument("--db", default="trangvang.db")
     i.add_argument("--out", default="cong_ty.xlsx")
 
+    w = sub.add_parser("watch", help="Chạy nền: tự đọc trang vừa lưu (Ctrl+S) và cập nhật Excel")
+    w.add_argument("--dir", default="trang_da_luu", help="Thư mục theo dõi (mặc định: trang_da_luu)")
+    w.add_argument("--sector", default="", help="Tên lĩnh vực ghi vào cột Lĩnh vực (tùy chọn)")
+    w.add_argument("--interval", type=float, default=3.0, help="Giây giữa 2 lần quét thư mục")
+    w.add_argument("--db", default="trangvang.db")
+    w.add_argument("--out", default="cong_ty.xlsx")
+
     s = sub.add_parser("status", help="Xem tiến độ")
     s.add_argument("--db", default="trangvang.db")
 
@@ -666,6 +726,13 @@ def main(argv=None):
         t, d = store.db.execute("SELECT COUNT(*), SUM(done) FROM categories").fetchone()
         n = store.db.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
         print(f"Phân ngành: {d or 0}/{t} xong | Công ty đã cào: {n}")
+        return
+
+    if a.cmd == "watch":
+        try:
+            watch(store, a.dir, a.out, a.sector, a.interval)
+        except KeyboardInterrupt:
+            log.info("Đã dừng theo dõi.")
         return
 
     if a.cmd == "import-html":
