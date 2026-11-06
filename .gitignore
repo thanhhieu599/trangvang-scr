@@ -1,0 +1,6 @@
+*.db
+*.log
+*.xlsx
+*.csv
+__pycache__/
+.pytest_cache/

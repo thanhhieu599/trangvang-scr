@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nút thu thập danh bạ</title>
+<style>
+  :root { --bg:#f7f6f2; --card:#fff; --ink:#1d1d1b; --muted:#5f5e5a; --accent:#f2c200; --line:#e4e2da; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:40px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin-bottom:16px; }
+  .btn { display:inline-block; background:var(--accent); color:#1d1d1b; font-weight:700; padding:12px 20px;
+         border-radius:8px; text-decoration:none; cursor:grab; border:2px dashed #b38f00; }
+  ol { padding-left:20px; margin:8px 0 0; } li { margin:6px 0; }
+  code { background:#f0eee6; padding:1px 6px; border-radius:4px; }
+  .note { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Nút “Thu thập D&amp;T”</h1>
+  <p class="sub">Lấy Tên, Địa chỉ, SĐT, Email, Website của các công ty trên trang anh/chị đang xem, rồi tải về Excel.</p>
+
+  <div class="card">
+    <strong>Bước 1: Cài đặt (1 lần)</strong>
+    <ol>
+      <li>Bấm <code>Ctrl + Shift + B</code> để hiện thanh dấu trang của Chrome/Edge.</li>
+      <li>Kéo nút dưới đây thả lên thanh dấu trang:</li>
+    </ol>
+    <p style="margin:16px 0 4px"><a id="bm" class="btn" href="#">📥 Thu thập D&amp;T</a></p>
+    <p class="note">Không kéo được? Chuột phải vào nút → “Sao chép địa chỉ liên kết”, tạo dấu trang mới và dán vào ô URL.</p>
+  </div>
+
+  <div class="card">
+    <strong>Bước 2: Thu thập</strong>
+    <ol>
+      <li>Mở Trang Vàng, vào phân ngành cần lấy (trang danh sách công ty).</li>
+      <li>Bấm nút <b>📥 Thu thập D&amp;T</b> trên thanh dấu trang. Góc phải hiện bảng: “Đã có N công ty”.</li>
+      <li>Sang trang 2, 3… hoặc phân ngành khác, bấm nút lại. Dữ liệu cộng dồn, không trùng.</li>
+      <li>Vào trang chi tiết một công ty và bấm nút để bổ sung email (trang danh sách thường không hiện email).</li>
+      <li>Bấm <b>Tải Excel (CSV)</b> trên bảng để tải file.</li>
+    </ol>
+    <p class="note">Dữ liệu lưu trong trình duyệt của máy đang dùng. Luôn dùng cùng một địa chỉ web (có hoặc không có “www.”), đổi địa chỉ thì dữ liệu sẽ không cộng dồn. Tải file thường xuyên để không mất dữ liệu khi xóa lịch sử duyệt web.</p>
+  </div>
+</main>
+
+<script type="text/plain" id="src">
+(function () {
+  var KEY = 'dt_trangvang_v1';
+  var BAD = ['trangvangvietnam.com','facebook.com','fb.com','zalo.me','google.','goo.gl','youtube.com','youtu.be',
+    'twitter.com','x.com','instagram.com','linkedin.com','tiktok.com','pinterest.com','messenger.com','bit.ly'];
+  var LIST_RE = /\/listings\/(\d+)/;
+  var PHONE_RE = /(?:\+?84|0)[\d\s.\-()]{8,14}\d/g;
+  var EMAIL_RE = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
+
+  function clean(t) { return (t || '').replace(/\s+/g, ' ').replace(/^[\s|·\-–]+|[\s|·\-–]+$/g, ''); }
+  function lid(href) { var m = LIST_RE.exec(href || ''); return m ? m[1] : null; }
+  function cf(hex) { var k = parseInt(hex.substr(0, 2), 16), s = '';
+    for (var i = 2; i < hex.length; i += 2) s += String.fromCharCode(parseInt(hex.substr(i, 2), 16) ^ k); return s; }
+  function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
+  function save(d) { localStorage.setItem(KEY, JSON.stringify(d)); }
+
+  function parse(block, url, name) {
+    var r = { id: lid(url), url: url, name: name, address: '', phone: [], email: [], website: '' };
+    block.querySelectorAll('a[href^="tel:"]').forEach(function (a) {
+      var ctx = (a.parentElement ? a.parentElement.innerText : '').toLowerCase();
+      var n = clean(decodeURIComponent(a.getAttribute('href').slice(4)) || a.innerText);
+      if (n && ctx.indexOf('fax') < 0 && r.phone.indexOf(n) < 0) r.phone.push(n);
+    });
+    if (!r.phone.length) block.innerText.split('\n').forEach(function (line) {
+      if (/fax/i.test(line)) return;
+      (line.match(PHONE_RE) || []).forEach(function (m) {
+        m = clean(m); if (m.replace(/\D/g, '').length >= 9 && r.phone.indexOf(m) < 0) r.phone.push(m);
+      });
+    });
+    function addEmail(e) { e = (e || '').trim().replace(/\.$/, '').toLowerCase();
+      if (/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(e) && r.email.indexOf(e) < 0) r.email.push(e); }
+    block.querySelectorAll('a[href]').forEach(function (a) {
+      var h = a.getAttribute('href');
+      if (/^mailto:/i.test(h)) addEmail(decodeURIComponent(h.slice(7).split('?')[0]));
+      else if (h.indexOf('email-protection#') >= 0) addEmail(cf(h.split('#')[1]));
+    });
+    block.querySelectorAll('[data-cfemail]').forEach(function (el) { addEmail(cf(el.getAttribute('data-cfemail'))); });
+    if (!r.email.length) (block.innerText.match(EMAIL_RE) || []).forEach(addEmail);
+
+    var best = null, bestScore = 0;
+    block.querySelectorAll('a[href^="http"]').forEach(function (a) {
+      var dom; try { dom = new URL(a.href).hostname.toLowerCase(); } catch (e) { return; }
+      if (BAD.some(function (b) { return dom.indexOf(b) >= 0; })) return;
+      var t = clean(a.innerText).toLowerCase();
+      var sc = (t.indexOf('www.') === 0 || t.indexOf(dom.replace('www.', '')) >= 0) ? 2 : 1;
+      if (sc > bestScore) { best = a.href; bestScore = sc; }
+    });
+    if (best) r.website = best;
+    else { var w = /\b(www\.[a-z0-9\-.]+\.[a-z]{2,})/i.exec(block.innerText); if (w) r.website = w[1]; }
+
+    var icons = block.querySelectorAll('i, span, img, svg');
+    for (var i = 0; i < icons.length && !r.address; i++) {
+      var el = icons[i];
+      var attrs = (el.getAttribute('class') || '') + ' ' + (el.getAttribute('alt') || '') + ' ' + (el.getAttribute('src') || '');
+      if (/(location|map-marker|map-pin|fa-map|place|address|dia-chi)/i.test(attrs) && el.parentElement) {
+        var t = clean(el.parentElement.innerText);
+        if (t.length > 10 && !/^(vp |văn phòng|địa chỉ đăng ký)/i.test(t)) r.address = t;
+      }
+    }
+    if (!r.address) block.innerText.split('\n').some(function (line) {
+      line = clean(line); var low = line.toLowerCase();
+      if (/việt nam|tp\.|quận|phường/.test(low) && line.length > 15 && line.length < 250 &&
+          !/^(vp |văn phòng|địa chỉ đăng ký|ngành)/.test(low)) { r.address = line; return true; }
+    });
+    r.phone = r.phone.join(' / '); r.email = r.email.join('; ');
+    return r;
+  }
+
+  function category() {
+    var inp = document.querySelector('input[type="text"][value], input[type="search"][value]');
+    if (inp && clean(inp.value).length > 3) return clean(inp.value);
+    var h1 = document.querySelector('h1'); return h1 ? clean(h1.innerText) : clean(document.title);
+  }
+
+  var found = [];
+  if (lid(location.href)) {                          // trang chi tiết công ty
+    var h1 = document.querySelector('h1'), node = h1, block = document.body;
+    for (var k = 0; k < 8 && node && node.parentElement; k++) {
+      node = node.parentElement;
+      if (node.querySelector('a[href^="tel:"], a[href^="mailto:"], [data-cfemail]')) { block = node; break; }
+    }
+    found.push(parse(block, location.href.split('#')[0], h1 ? clean(h1.innerText) : clean(document.title)));
+  } else {                                            // trang danh sách
+    var seen = {};
+    document.querySelectorAll('a[href]').forEach(function (a) {
+      var id = lid(a.getAttribute('href')); if (!id || seen[id]) return;
+      var card = a;
+      while (card.parentElement && card.parentElement.tagName !== 'BODY') {
+        var ids = {};
+        card.parentElement.querySelectorAll('a[href]').forEach(function (x) { var j = lid(x.getAttribute('href')); if (j) ids[j] = 1; });
+        if (Object.keys(ids).length > 1) break;
+        card = card.parentElement;
+      }
+      if (card === a) return;
+      seen[id] = 1;
+      var title = card.querySelector('h1,h2,h3,h4');
+      var name = title ? clean(title.innerText) : clean(a.innerText);
+      found.push(parse(card, a.href.split('#')[0], name.replace(/^\d+\s+/, '')));
+    });
+  }
+
+  var data = load(), cat = lid(location.href) ? '' : category(), added = 0;
+  found.forEach(function (r) {
+    if (!r.id) return;
+    var old = data[r.id];
+    r.category = cat; r.at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    if (!old) { data[r.id] = r; added++; return; }
+    ['name', 'address', 'phone', 'email', 'website'].forEach(function (f) { if (!old[f] && r[f]) old[f] = r[f]; });
+    if (cat && (old.category || '').split(' | ').indexOf(cat) < 0) old.category = old.category ? old.category + ' | ' + cat : cat;
+  });
+  save(data);
+
+  function csv() {
+    var head = ['Phân ngành', 'Tên công ty', 'Địa chỉ', 'Điện thoại', 'Email', 'Website', 'Link nguồn', 'Ngày thu thập'];
+    var rows = Object.keys(data).map(function (k) { var d = data[k];
+      return [d.category, d.name, d.address, d.phone, d.email, d.website, d.url, d.at]; });
+    var text = [head].concat(rows).map(function (r) {
+      return r.map(function (v) { return '"' + String(v || '').replace(/"/g, '""') + '"'; }).join(',');
+    }).join('\r\n');
+    var blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'danh_ba_' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  var old = document.getElementById('dt-panel'); if (old) old.remove();
+  var p = document.createElement('div'); p.id = 'dt-panel';
+  p.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#1d1d1b;' +
+    'border:2px solid #f2c200;border-radius:10px;padding:14px 16px;font:14px/1.5 system-ui,sans-serif;' +
+    'box-shadow:0 6px 24px rgba(0,0,0,.18);width:260px';
+  var total = Object.keys(data).length;
+  p.innerHTML = '<b>📥 Thu thập D&amp;T</b><br>Trang này: ' + found.length + ' công ty (+' + added + ' mới)<br>' +
+    'Tổng đã có: <b>' + total + '</b> công ty<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap"></div>';
+  var bar = p.lastChild;
+  function btn(label, fn, bg) { var b = document.createElement('button'); b.textContent = label;
+    b.style.cssText = 'border:0;border-radius:6px;padding:6px 10px;cursor:pointer;font:600 13px system-ui;background:' + bg;
+    b.onclick = fn; bar.appendChild(b); }
+  btn('Tải Excel (CSV)', csv, '#f2c200');
+  btn('Xóa dữ liệu', function () { if (confirm('Xóa toàn bộ ' + total + ' công ty đã thu thập?')) { localStorage.removeItem(KEY); p.remove(); } }, '#eee');
+  btn('Đóng', function () { p.remove(); }, '#eee');
+  document.body.appendChild(p);
+  if (!found.length) p.firstChild.insertAdjacentHTML('afterend', '<br><span style="color:#b00">Không thấy công ty nào trên trang này.</span>');
+})();
+</script>
+<script>
+  document.getElementById('bm').href = 'javascript:' + encodeURIComponent(document.getElementById('src').textContent);
+</script>
+</body>
+</html>
