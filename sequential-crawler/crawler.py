@@ -171,6 +171,105 @@ class Client:
         if not self.robots.can_fetch(AGENT, url): raise Halt(f'robots.txt không cho phép: {url}')
         return self.request(url)
 
+    def close(self):
+        self.session.close()
+
+
+class BrowserClient(Client):
+    """Visible browser with a dedicated local profile and manual verification."""
+    def __init__(self, delay=5, profile='data/browser-profile', channel=None):
+        super().__init__(delay)
+        self.runtime = None
+        self.context = None
+        try:
+            from playwright.sync_api import sync_playwright
+            self.runtime = sync_playwright().start()
+            options = {'headless': False}
+            if channel: options['channel'] = channel
+            self.context = self.runtime.chromium.launch_persistent_context(
+                user_data_dir=str(Path(profile).resolve()), **options)
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            self.status = None
+            self.content_type = ''
+            self.page.on('response', self._response)
+            self.page.route('**/*', self._route)
+        except Exception as exc:
+            self.close()
+            raise Halt('Không mở được trình duyệt. Cài: pip install -r requirements-browser.txt; '
+                       'python -m playwright install chromium. Hoặc dùng --browser-channel chrome. '
+                       'Không dùng chung thư mục hồ sơ với Chrome đang mở.') from exc
+
+    def _route(self, route):
+        request = route.request
+        if (request.is_navigation_request() and request.frame == self.page.main_frame
+                and not canonical(request.url)):
+            route.abort()
+        else:
+            route.continue_()
+
+    def _response(self, response):
+        request = response.request
+        if request.is_navigation_request() and request.frame == self.page.main_frame:
+            self.status = response.status
+            self.content_type = response.headers.get('content-type', '')
+
+    def _document(self):
+        if 'text/plain' in self.content_type:
+            return self.page.locator('body').inner_text()
+        return self.page.content()
+
+    def _blocked(self, content):
+        return self.status == 403 or any(marker in content.lower() for marker in (
+            'cf-chl-', 'challenge-platform', 'sorry, you have been blocked',
+            'verify you are human', 'g-recaptcha', 'hcaptcha-container',
+            '<title>just a moment', '<title>attention required'))
+
+    def request(self, url):
+        try:
+            time.sleep(max(0, self.delay - (time.monotonic() - self.last)))
+            self.last = time.monotonic()
+            self.status = None
+            self.content_type = ''
+            self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            content = self._document()
+            if self.status in (401, 429):
+                raise Halt(f'Website trả HTTP {self.status}; đã giữ tiến độ, không tiếp tục gửi yêu cầu.')
+            if self._blocked(content):
+                logging.warning('Cần thao tác thủ công trong cửa sổ trình duyệt tại %s', url)
+                answer = input('Nếu website cho phép, hoàn tất xác minh trong trình duyệt. '
+                               'Sau khi trang thật đã hiện, quay lại đây nhấn Enter; nhập q để dừng: ')
+                if answer.strip().lower() == 'q': raise Halt('Người dùng dừng; tiến độ được giữ.')
+                # Pump browser events after the user returns so the latest main-document
+                # response replaces the challenge response before inspecting the page.
+                self.page.wait_for_timeout(300)
+                self.page.wait_for_load_state('domcontentloaded', timeout=15000)
+                content = self._document()
+            if not canonical(self.page.url) or identity(self.page.url) != identity(url):
+                raise Halt('Trình duyệt không ở đúng trang yêu cầu; đã giữ tiến độ.')
+            if self.status in (401, 429) or self._blocked(content):
+                raise Halt('Trang vẫn bị chặn. Cần website cho phép truy cập; đã giữ tiến độ.')
+            if self.status is None or not 200 <= self.status < 300:
+                raise Halt(f'Trình duyệt trả HTTP {self.status}; đã giữ tiến độ.')
+            if 'robots.txt' not in urlsplit(url).path:
+                self.page.wait_for_selector('h1, a[href*="/gindex/"]', timeout=15000)
+                content = self._document()
+            return content
+        except Halt:
+            raise
+        except EOFError as exc:
+            raise Halt('Chế độ browser cần terminal tương tác để xác minh thủ công.') from exc
+        except Exception as exc:
+            raise Halt(f'Trình duyệt gián đoạn ({type(exc).__name__}); đã giữ tiến độ.') from exc
+
+    def close(self):
+        try:
+            if self.context: self.context.close()
+        finally:
+            try:
+                if self.runtime: self.runtime.stop()
+            finally:
+                super().close()
+
 
 class Store:
     def __init__(self, path):
@@ -299,6 +398,9 @@ def main():
     parser.add_argument('--db', default='data/crawler.sqlite')
     parser.add_argument('--out', default='data/export')
     parser.add_argument('--delay', type=float, default=5)
+    parser.add_argument('--browser', action='store_true', help='Mở trình duyệt có giao diện, xác minh thủ công nếu cần')
+    parser.add_argument('--browser-channel', choices=['chrome', 'msedge'], help='Dùng Chrome hoặc Edge đã cài; mặc định Chromium')
+    parser.add_argument('--profile', help='Thư mục hồ sơ riêng; mặc định browser-profile cạnh DB')
     parser.add_argument('--max-pages', type=int, default=0, help='0 = không giới hạn; tính cả trang chi tiết')
     args = parser.parse_args()
     if args.max_pages < 0: parser.error('--max-pages phải >= 0')
@@ -306,6 +408,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=[logging.StreamHandler(), logging.FileHandler(str(Path(args.db).with_suffix('.log')), encoding='utf-8')])
     store = Store(args.db)
     code = 0
+    client = None
     try:
         if args.command == 'run':
             url = canonical(args.start)
@@ -314,7 +417,9 @@ def main():
             kind = 'company' if path.startswith('/listings/') else 'page' if path.startswith('/categories/') else 'sector' if path.startswith('/gindex/') else 'root'
             store.add(url, kind, url if kind == 'sector' else '', url if kind == 'page' else '')
             store.db.commit()
-            crawl(store, Client(args.delay), args.max_pages, Path(args.db).parent / 'html')
+            client = (BrowserClient(args.delay, args.profile or Path(args.db).parent / 'browser-profile', args.browser_channel)
+                      if args.browser else Client(args.delay))
+            crawl(store, client, args.max_pages, Path(args.db).parent / 'html')
         elif args.command == 'retry-errors':
             store.db.execute("UPDATE tasks SET status='pending',error=NULL WHERE status='error'")
             store.db.commit()
@@ -325,8 +430,13 @@ def main():
         logging.warning('Đã tạm dừng: %s', exc)
         code = 2
     finally:
-        store.export(args.out)
-        store.db.close()
+        try:
+            if client: client.close()
+        finally:
+            try:
+                store.export(args.out)
+            finally:
+                store.db.close()
     return code
 
 if __name__ == '__main__':

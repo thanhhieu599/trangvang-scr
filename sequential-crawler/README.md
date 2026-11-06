@@ -2,7 +2,7 @@
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.
 
-**Trạng thái ngày 06/11/2026:** đã vượt qua 7 kiểm thử tự động bằng dữ liệu mẫu. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+**Trạng thái ngày 06/11/2026:** đã vượt qua 15 kiểm thử tự động bằng dữ liệu mẫu và mô phỏng trình duyệt. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
 
 ## Cài đặt
 
@@ -46,6 +46,35 @@ python crawler.py run --start "https://trangvangvietnam.com/categories/47910/hoa
 
 Khi bắt đầu trực tiếp từ URL lĩnh vực/phân ngành, nhãn nguồn dùng URL đó. Chạy từ trang chủ lấy nhãn từ liên kết.
 
+## Khi requests bị chặn: mở trình duyệt có giao diện
+
+Cập nhật nhánh `codex/sequential-company-crawler`, mở terminal trong `sequential-crawler/`, cài thêm:
+
+```sh
+python -m pip install -r requirements-browser.txt
+```
+
+Dùng Google Chrome đã cài trên máy (có thể thay `chrome` bằng `msedge`):
+
+```sh
+python crawler.py run --browser --browser-channel chrome --delay 8 --max-pages 20
+```
+
+Nếu không có Chrome/Edge, cài Chromium của Playwright và chạy:
+
+```sh
+python -m playwright install chromium
+python crawler.py run --browser --delay 8 --max-pages 20
+```
+
+Một cửa sổ trình duyệt riêng sẽ mở. Khi gặp trang xác minh, terminal sẽ nhắc bạn hoàn tất thao tác trong cửa sổ đó. Chờ trang nội dung thật xuất hiện, quay lại terminal và nhấn Enter. Nhập `q` hoặc Ctrl+C để dừng. Mỗi lần tải chỉ nhắc một lần; nếu vẫn bị chặn, chương trình dừng và giữ tác vụ ở trạng thái pending. HTTP 401/429 làm dừng ngay. Không có giải CAPTCHA tự động, đổi IP hoặc sửa dấu vân tay.
+
+Phiên trình duyệt lưu mặc định ở `data/browser-profile/`; các lần chạy sau dùng lại thư mục này. Nếu trước đó chạy với `--db` riêng, truyền **đúng đường dẫn DB cũ** để tiếp tục tiến độ đó. Đóng phiên chương trình trước khi chạy lại. Không dùng thư mục hồ sơ cá nhân của Chrome, không chạy hai tiến trình dùng chung profile. Thư mục này có cookie: không chia sẻ hoặc đưa lên GitHub. Dùng `--profile` nếu muốn chọn thư mục riêng khác.
+
+Chạy trong terminal có thể nhập liệu và máy có giao diện màn hình; không dùng tác vụ nền cho chế độ này. Tốc độ vẫn có giới hạn, robots.txt vẫn được kiểm tra. Khi website từ chối truy cập hoặc robots.txt không cho phép, cần chủ nguồn cho phép truy cập/API. Việc mở Chrome không bảo đảm website sẽ cho phép thu thập.
+
+Đã kiểm thử 15 trường hợp, trong đó 8 trường hợp dùng mô phỏng trình duyệt để kiểm tra xử lý xác minh, dừng, giới hạn tốc độ, robots và điều hướng sai. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+
 ## Dữ liệu và tiến độ
 
 - SQLite chứa hàng đợi, trạng thái pending/done/error, dữ liệu công ty, quan hệ công ty với nhiều ngành.
@@ -67,7 +96,7 @@ retry-errors chỉ đưa tác vụ lỗi về pending; sau đó chạy run. Lỗ
 
 ## Quy tắc truy cập
 
-Không dùng proxy xoay vòng, giả dấu vân tay, giải CAPTCHA tự động hoặc vượt chặn. User-Agent minh bạch. Kiểm tra robots.txt đầu phiên, theo crawl-delay/request-rate, tốc độ tối thiểu 3 giây/yêu cầu, mặc định 5 giây. Thử lại tối đa 4 lần với lỗi mạng/5xx. HTTP 401/403/429, dấu hiệu CAPTCHA/Cloudflare hoặc robots.txt không hợp lệ làm dừng. Chuyển hướng cũng dừng để kiểm tra, tránh truy cập nhầm nơi; chỉ thu thập cùng domain, không truy cập website ngoài của từng công ty.
+Không dùng proxy xoay vòng, giả dấu vân tay, giải CAPTCHA tự động hoặc vượt chặn. Chế độ HTTP dùng User-Agent AuthorizedDirectoryCollector/1.0; chế độ browser dùng trình duyệt thông thường với hồ sơ riêng. Kiểm tra robots.txt đầu phiên, theo crawl-delay/request-rate, tốc độ tối thiểu 3 giây/yêu cầu, mặc định 5 giây. Thử lại tối đa 4 lần với lỗi mạng/5xx. Chế độ HTTP dừng ở HTTP 401/403/429 hoặc dấu hiệu CAPTCHA/Cloudflare. Chế độ browser cho phép xác minh thủ công một lần khi gặp trang chặn; nếu vẫn bị chặn thì dừng. robots.txt không hợp lệ làm dừng ở cả hai chế độ. Chuyển hướng cũng dừng để kiểm tra, tránh truy cập nhầm nơi; chỉ thu thập cùng domain, không truy cập website ngoài của từng công ty.
 
 Nếu vẫn bị chặn, cần chủ website cấp API, bản xuất dữ liệu hoặc cho phép IP/User-Agent của bạn. Tiếp tục cùng DB sau khi quyền truy cập đã được mở. Bộ này không bảo đảm vượt chống bot.
 

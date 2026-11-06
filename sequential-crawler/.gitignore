@@ -1,3 +1,7 @@
 .venv/
 __pycache__/
 data/
+browser-profile/
+*.sqlite
+*.sqlite-*
+*.log
