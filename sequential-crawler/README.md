@@ -2,7 +2,7 @@
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.
 
-**Trạng thái ngày 07/11/2026:** đã vượt qua 21 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+**Trạng thái ngày 07/11/2026:** đã vượt qua 26 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
 
 ## Cài đặt
 
@@ -67,13 +67,13 @@ python -m playwright install chromium
 python crawler.py run --browser --delay 8 --max-pages 20
 ```
 
-Một cửa sổ trình duyệt riêng sẽ mở. Khi gặp trang xác minh, terminal sẽ nhắc bạn hoàn tất thao tác trong cửa sổ đó. Chờ trang nội dung thật xuất hiện, quay lại terminal và nhấn Enter. Nhập `q` hoặc Ctrl+C để dừng. Mỗi lần tải chỉ nhắc một lần; nếu vẫn bị chặn, chương trình dừng và giữ tác vụ ở trạng thái pending. HTTP 401/429 làm dừng ngay. Không có giải CAPTCHA tự động; tùy chọn stealth/proxy được mô tả bên dưới.
+Một cửa sổ trình duyệt riêng sẽ mở. **Giữ cửa sổ/tab này mở trong suốt lúc chạy**; mở website trong một Chrome khác không thay thế được phiên của chương trình. Khi gặp trang xác minh, terminal sẽ nhắc bạn hoàn tất thao tác trong cửa sổ đó. Chờ trang nội dung thật xuất hiện, quay lại terminal và nhấn Enter. Nhập `q` hoặc Ctrl+C để dừng. Trong lúc chờ Enter, vòng xử lý Playwright vẫn chạy để trang và bước xác minh tiếp tục tải. Nếu đóng tab/cửa sổ, chương trình dừng với thông báo rõ ràng và dọn các route trước khi đóng context. Trang “Sorry, you have been blocked” được nhận diện là từ chối truy cập và dừng ngay, không chờ Enter vô ích. Với trang có bước xác minh, mỗi lần tải chỉ nhắc một lần; nếu vẫn bị chặn, chương trình dừng và giữ tác vụ ở trạng thái pending. HTTP 401/429 làm dừng ngay. Không có giải CAPTCHA tự động; tùy chọn stealth/proxy được mô tả bên dưới.
 
 Phiên trình duyệt lưu mặc định ở `data/browser-profile/`; các lần chạy sau dùng lại thư mục này. Nếu trước đó chạy với `--db` riêng, truyền **đúng đường dẫn DB cũ** để tiếp tục tiến độ đó. Đóng phiên chương trình trước khi chạy lại. Không dùng thư mục hồ sơ cá nhân của Chrome, không chạy hai tiến trình dùng chung profile. Thư mục này có cookie: không chia sẻ hoặc đưa lên GitHub. Dùng `--profile` nếu muốn chọn thư mục riêng khác.
 
 Chạy trong terminal có thể nhập liệu và máy có giao diện màn hình; không dùng tác vụ nền cho chế độ này. Tốc độ vẫn có giới hạn, robots.txt vẫn được kiểm tra. Khi website từ chối truy cập hoặc robots.txt không cho phép, cần chủ nguồn cho phép truy cập/API. Việc mở Chrome không bảo đảm website sẽ cho phép thu thập.
 
-Đã kiểm thử 21 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+Đã kiểm thử 26 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
 
 ## Tùy chọn stealth, proxy và chờ ngẫu nhiên
 

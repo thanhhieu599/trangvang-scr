@@ -1,5 +1,6 @@
 """Sequential, resumable crawler for authorized public Trang Vang pages."""
 import argparse
+import asyncio
 import csv
 import hashlib
 import json
@@ -9,6 +10,8 @@ import random
 import re
 import sqlite3
 import time
+from queue import Empty, Queue
+from threading import Thread
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs, unquote
@@ -204,6 +207,7 @@ class BrowserClient(Client):
         super().__init__(delay)
         self.runtime = None
         self.context = None
+        self._closing = False
         self.jitter = jitter
         self.headless = headless
         try:
@@ -239,12 +243,20 @@ class BrowserClient(Client):
                        'Không dùng chung thư mục hồ sơ với Chrome đang mở.') from exc
 
     def _route(self, route):
-        request = route.request
-        if (request.is_navigation_request() and request.frame == self.page.main_frame
-                and not canonical(request.url)):
-            route.abort()
-        else:
-            route.continue_()
+        try:
+            if self._closing: return
+            request = route.request
+            if (request.is_navigation_request() and request.frame == self.page.main_frame
+                    and not canonical(request.url)):
+                route.abort()
+            else:
+                route.continue_()
+        except asyncio.CancelledError:
+            # Playwright may cancel in-flight route callbacks during shutdown.
+            return
+        except Exception:
+            if self._closing or self.page.is_closed(): return
+            raise
 
     def _response(self, response):
         request = response.request
@@ -279,6 +291,31 @@ class BrowserClient(Client):
             'verify you are human', 'g-recaptcha', 'hcaptcha-container',
             '<title>just a moment', '<title>attention required'))
 
+    def _wait_for_user(self):
+        # Only terminal input runs on a worker. All Playwright calls remain on
+        # the owning thread, which keeps dispatching route/response events.
+        replies = Queue()
+        def read_terminal():
+            try:
+                answer = input('Hoàn tất xác minh trong cửa sổ Chrome do chương trình mở. '
+                               'Giữ cửa sổ đó mở; khi trang thật hiện, nhấn Enter ở đây. '
+                               'Nhập q để dừng: ')
+                replies.put((True, answer))
+            except BaseException as exc:
+                replies.put((False, exc))
+        Thread(target=read_terminal, name='crawler-terminal', daemon=True).start()
+        while True:
+            if self.page.is_closed():
+                raise Halt('Cửa sổ/tab Chrome của chương trình đã đóng; tiến độ được giữ. '
+                           'Chạy lại và giữ cửa sổ đó mở trong khi xác minh.')
+            try:
+                success, value = replies.get_nowait()
+            except Empty:
+                self.page.wait_for_timeout(100)
+                continue
+            if not success: raise value
+            return value
+
     def request(self, url):
         try:
             time.sleep(max(0, self.delay - (time.monotonic() - self.last))
@@ -290,16 +327,17 @@ class BrowserClient(Client):
             content = self._document()
             if self.status in (401, 429):
                 raise Halt(f'Website trả HTTP {self.status}; đã giữ tiến độ, không tiếp tục gửi yêu cầu.')
+            if 'sorry, you have been blocked' in content.lower():
+                raise Halt('Cloudflare từ chối truy cập (Sorry, you have been blocked). '
+                           'Trang này không có bước xác minh để tiếp tục; đã giữ tiến độ.')
             if self._blocked(content):
                 if getattr(self, 'headless', False):
                     raise Halt('Gặp trang chặn khi chạy headless. Chạy lại không có --headless '
                                'để kiểm tra/xác minh thủ công. Đã giữ tiến độ.')
                 logging.warning('Cần thao tác thủ công trong cửa sổ trình duyệt tại %s', url)
-                answer = input('Nếu website cho phép, hoàn tất xác minh trong trình duyệt. '
-                               'Sau khi trang thật đã hiện, quay lại đây nhấn Enter; nhập q để dừng: ')
+                answer = self._wait_for_user()
                 if answer.strip().lower() == 'q': raise Halt('Người dùng dừng; tiến độ được giữ.')
-                # Pump browser events after the user returns so the latest main-document
-                # response replaces the challenge response before inspecting the page.
+                # Flush any final navigation event after confirmation.
                 self.page.wait_for_timeout(300)
                 self.page.wait_for_load_state('domcontentloaded', timeout=15000)
                 content = self._document()
@@ -318,16 +356,31 @@ class BrowserClient(Client):
         except EOFError as exc:
             raise Halt('Chế độ browser cần terminal tương tác để xác minh thủ công.') from exc
         except Exception as exc:
+            if self.page.is_closed():
+                raise Halt('Cửa sổ/tab Chrome của chương trình đã đóng; đã giữ tiến độ. '
+                           'Chạy lại và giữ cửa sổ đó mở.') from None
             raise Halt(f'Trình duyệt gián đoạn ({type(exc).__name__}); đã giữ tiến độ.') from exc
 
     def close(self):
+        if getattr(self, '_closing', False): return
+        self._closing = True
         try:
-            if self.context: self.context.close()
+            page = getattr(self, 'page', None)
+            actions = []
+            if page is not None:
+                actions += [lambda: page.unroute_all(behavior='ignoreErrors'),
+                            lambda: page.remove_listener('response', self._response)]
+            if self.context: actions.append(self.context.close)
+            if self.runtime: actions.append(self.runtime.stop)
+            for action in actions:
+                try:
+                    action()
+                except (Exception, asyncio.CancelledError) as exc:
+                    logging.debug('Phiên trình duyệt đã đóng trong lúc dọn dẹp (%s)', type(exc).__name__)
         finally:
-            try:
-                if self.runtime: self.runtime.stop()
-            finally:
-                super().close()
+            self.context = None
+            self.runtime = None
+            super().close()
 
 
 class Store:

@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import unittest
 from unittest.mock import Mock, patch
 from urllib.robotparser import RobotFileParser
@@ -10,6 +12,8 @@ class BrowserTests(unittest.TestCase):
         Client.__init__(client)
         client.page = Mock()
         client.page.url = BASE
+        client.page.is_closed.return_value = False
+        client._closing = False
         client.runtime = None
         client.context = None
         client.content_type = 'text/html'
@@ -74,6 +78,47 @@ class BrowserTests(unittest.TestCase):
         client = self.client()
         client.page.url = 'https://example.test/'
         with self.assertRaisesRegex(Halt, 'đúng trang'): client.request(BASE)
+
+    def test_input_wait_keeps_browser_events_running(self):
+        client = self.client(403)
+        ready = threading.Event()
+        def terminal(_):
+            if not ready.wait(2): raise AssertionError('Browser events stopped during input')
+            return ''
+        client.page.wait_for_timeout.side_effect = lambda _: ready.set()
+        with patch('builtins.input', side_effect=terminal):
+            self.assertEqual(client._wait_for_user(), '')
+        client.page.wait_for_timeout.assert_called()
+
+    def test_hard_block_does_not_wait_for_enter(self):
+        client = self.client(403, 'Sorry, you have been blocked')
+        with patch('builtins.input') as prompt:
+            with self.assertRaisesRegex(Halt, 'Cloudflare từ chối'): client.request(BASE)
+        prompt.assert_not_called()
+
+    def test_closed_page_has_clear_message(self):
+        client = self.client(403)
+        client.page.is_closed.return_value = True
+        with patch('builtins.input', return_value=''):
+            with self.assertRaisesRegex(Halt, 'Chrome.*đã đóng'): client._wait_for_user()
+
+    def test_cleanup_continues_after_closed_context(self):
+        client = self.client()
+        context, runtime = Mock(), Mock()
+        client.context, client.runtime = context, runtime
+        client.page.unroute_all.side_effect = RuntimeError('already closed')
+        context.close.side_effect = RuntimeError('already closed')
+        client.close()
+        runtime.stop.assert_called_once()
+        client.close()
+        runtime.stop.assert_called_once()
+
+    def test_cancelled_route_is_expected_during_shutdown(self):
+        client = self.client()
+        route = Mock()
+        route.request.is_navigation_request.return_value = False
+        route.continue_.side_effect = asyncio.CancelledError()
+        client._route(route)
 
 
 if __name__ == '__main__': unittest.main()
