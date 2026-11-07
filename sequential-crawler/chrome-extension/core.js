@@ -64,3 +64,6 @@ export function toCSV(rows) {
     return '"' + s.replaceAll('"', '""') + '"'; };
   return '\uFEFF' + [columns, ...rows.map(r => columns.map(c => r[c]))].map(row => row.map(cell).join(',')).join('\r\n');
 }
+export function addEvent(config, type, message, details = {}) {
+  config.events = [...(config.events || []), {at:new Date().toISOString(), type, message, ...details}].slice(-50);
+}

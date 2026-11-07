@@ -1,4 +1,4 @@
-import {BASE, canonical, identity, kindOf, task, parseRobots, allowed} from './core.js';
+import {BASE, canonical, identity, kindOf, task, parseRobots, allowed, addEvent} from './core.js';
 import {req, transaction, state, saveState, enqueue, nextTask, statistics} from './db.js';
 import {readPage} from './extract.js';
 let tail = Promise.resolve();
@@ -6,7 +6,7 @@ const serial = fn => { const work = tail.then(fn); tail = work.catch(() => {}); 
 const ALARM = 'collector-next';
 async function pause(message) {
   const config = await state();
-  if (config) { config.running = false; config.message = message; await saveState(config); }
+  if (config) { config.running = false; config.message = message; addEvent(config,'paused',message); await saveState(config); }
   await chrome.alarms.clear(ALARM);
   await chrome.alarms.clear('collector-watchdog');
 }
@@ -42,13 +42,20 @@ async function kick() {
     if (!allowed(config.robots, entry.url)) throw Error('robots.txt không cho phép URL đang chờ: ' + entry.url);
     const cached = entry.kind === 'company' ? await transaction(['companies'], 'readonly', tx => req(tx.objectStore('companies').get(identity(entry.url)))) : null;
     if (cached) {
-      await transaction(['tasks','companies'], 'readwrite', async tx => {
+      await transaction(['tasks','companies','meta'], 'readwrite', async tx => {
         await req(tx.objectStore('companies').put(member(cached, entry)));
         entry.status = 'done'; await req(tx.objectStore('tasks').put(entry));
+        config.skippedThisRun = (config.skippedThisRun || 0) + 1;
+        config.skippedTotal = (config.skippedTotal || 0) + 1;
+        config.lastTask = entry; config.lastCompany = cached;
+        addEvent(config,'skipped','Bỏ qua công ty đã có: ' + cached.name,{url:entry.url});
+        await req(tx.objectStore('meta').put(config,'state'));
       });
       continue;
     }
-    config.current = entry; config.navigationAt = Date.now(); config.message = entry.url;
+    config.current = entry;
+    addEvent(config,'loading','Đang tải ' + entry.kind,{url:entry.url});
+    config.navigationAt = Date.now(); config.message = entry.url;
     await saveState(config);
     await chrome.tabs.update(config.tabId, {url: entry.url});
     return;
@@ -84,6 +91,9 @@ async function consume(tabId) {
         record.categories = [...new Set([...existing.categories, ...record.categories])];
       }
       await req(tx.objectStore('companies').put(record));
+      config.savedThisRun = (config.savedThisRun || 0) + (existing ? 0 : 1);
+      config.lastCompany = record;
+      addEvent(config,'saved','Đã lưu: ' + record.name,{url:entry.url,review_required:record.review_required});
     } else {
       for (const child of result.children) {
         const url = canonical(child.url); if (!url) continue;
@@ -102,7 +112,8 @@ async function consume(tabId) {
       }
     }
     entry.status = 'done'; await req(tasks.put(entry));
-    config.runPages++; config.totalPages++;
+    config.runPages++; config.totalPages++; config.lastTask = entry;
+    if (entry.kind !== 'company') addEvent(config,'processed','Đã xử lý trang ' + entry.kind,{url:entry.url});
     // Clearing current in the same commit makes duplicate tab events harmless.
     config.current = null;
     await req(tx.objectStore('meta').put(config,'state'));
@@ -117,8 +128,11 @@ async function start(message) {
   const kind = kindOf(url);
   const config = {running:true, tabId:tab.id, delay:Math.max(30, Number(message.delay)||30),
     maxPages:Math.max(0, Math.floor(Number(message.maxPages)||0)), runPages:0, totalPages:existing.config?.totalPages||0,
-    sequence:existing.config?.sequence||0, robots:null, current:{kind:'robots',url:BASE+'robots.txt'},
+    sequence:existing.config?.sequence||0, savedThisRun:0, skippedThisRun:0,
+    skippedTotal:existing.config?.skippedTotal||0, events:existing.config?.events||[],
+    lastCompany:existing.config?.lastCompany||null, robots:null, current:{kind:'robots',url:BASE+'robots.txt'},
     navigationAt:Date.now(), nextAt:0, message:'Đọc robots.txt trong phiên Chrome hiện tại…'};
+  addEvent(config,'started','Bắt đầu thu thập từ tab hiện tại',{url});
   await transaction(['tasks','meta'], 'readwrite', async tx => {
     await enqueue(tx.objectStore('tasks'), task(url,kind,kind==='sector'?url:'',kind==='category'?url:'',0),config);
     await req(tx.objectStore('meta').put(config,'state'));
@@ -131,6 +145,8 @@ async function resume(message) {
   const tab = await chrome.tabs.get(message.tabId);
   if (!canonical(tab.url)) throw Error('Chọn tab Trang Vàng cần dùng rồi bấm Tiếp tục.');
   config.tabId = tab.id; config.running = true; config.runPages=0;
+  config.savedThisRun=0; config.skippedThisRun=0;
+  addEvent(config,'resumed','Tiếp tục từ tiến độ đã lưu');
   config.maxPages = Math.max(0, Math.floor(Number(message.maxPages)||0));
   config.delay = Math.max(30, config.robots?.delay || 0, Number(message.delay)||30);
   config.nextAt = Math.max(config.nextAt || 0, Date.now());

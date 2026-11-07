@@ -73,6 +73,27 @@ class Tests(unittest.TestCase):
             self.assertLess(calls.index(category+'?page=2'),calls.index(sibling))
             store.db.close()
 
+    def test_reopened_db_skips_old_company_and_logs_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'state.db'
+            store=Store(path);store.add(COMPANY,'company','Chem','A');store.db.commit()
+            first=Mock();first.get.return_value=CONTACT
+            with self.assertLogs(level='INFO') as logs:
+                crawl(store,first,0,Path(d)/'html')
+            self.assertTrue(any('ĐÃ LƯU' in line and 'info@example.test' in line for line in logs.output))
+            store.db.close()
+            store=Store(path)
+            # Same numeric ID, different slug and category after reopening SQLite.
+            store.add(BASE+'listings/12/changed-name.html','company','Chem','B');store.db.commit()
+            second=Mock();second.get.side_effect=AssertionError('Old company was downloaded again')
+            with self.assertLogs(level='INFO') as logs:
+                crawl(store,second,0,Path(d)/'html')
+            second.get.assert_not_called()
+            self.assertTrue(any('BỎ QUA ĐÃ CÓ' in line for line in logs.output))
+            self.assertEqual(store.db.execute('SELECT count(*) FROM companies').fetchone()[0],1)
+            self.assertEqual(store.db.execute('SELECT count(*) FROM memberships').fetchone()[0],2)
+            store.db.close()
+
     def test_halt_keeps_pending(self):
         with tempfile.TemporaryDirectory() as d:
             store = Store(Path(d)/'state.db')

@@ -25,6 +25,21 @@ Nếu Chrome do cơ quan quản lý không cho phép tải extension ngoài, c�
 - Tiến độ và dữ liệu extension độc lập với SQLite của Python; bản này chưa có nhập/chuyển đổi tiến độ giữa hai chế độ.
 - Gỡ extension hoặc xóa dữ liệu extension sẽ mất cơ sở dữ liệu cục bộ: xuất CSV trước. Cập nhật bản giải nén tại cùng đường dẫn rồi bấm Reload trên chrome://extensions; không gỡ cài đặt khi cần giữ dữ liệu.
 
+## Theo dõi trực tiếp
+
+Popup tự cập nhật mỗi 2 giây khi đang mở. Bấm **Mở bảng tiến độ** để giữ một tab riêng hiển thị thông tin trong lúc tab Trang Vàng tự chuyển trang. Bảng này ghi nhớ tab nguồn; nút Tiếp tục vẫn điều khiển tab thu thập, không điều hướng tab bảng tiến độ.
+
+Hiển thị: tổng công ty trong kho; số công ty mới và số lượt bỏ qua đã có trong lượt chạy; ngành/phân ngành và URL đang xử lý; số trang chờ; thời gian chờ lượt tiếp theo; tên, địa chỉ, SĐT, email, website của công ty vừa xử lý; 50 sự kiện gần nhất (đang tải/đã lưu/bỏ qua/dừng). Số mới và số bỏ qua của lượt được đặt về 0 khi bấm Bắt đầu hoặc Tiếp tục; tổng kho không bị đặt lại. Bỏ qua tính theo lượt gặp trong hàng đợi, không phải số công ty duy nhất. Trang đã done không vào hàng đợi lần nữa nên không tăng số bỏ qua.
+
+### Cơ chế không tải lại công ty đã lưu
+
+- Khóa công ty là phần `/listings/<ID số>`, độc lập slug/tên công ty. Hai URL khác tên nhưng cùng ID vẫn nhận diện là một công ty.
+- Trước khi điều hướng tới trang chi tiết, kiểm tra `companies` trong IndexedDB. Nếu đã có, không mở lại trang: bổ sung quan hệ ngành, đánh dấu tác vụ done và ghi nhật ký bỏ qua.
+- Mỗi tác vụ có khóa riêng và trạng thái pending/done. Ghi bản ghi công ty, đánh dấu done và cập nhật bộ đếm trong cùng một giao dịch IndexedDB; giao dịch thất bại sẽ không lưu nửa chừng.
+- Đóng/mở Chrome rồi tiếp tục vẫn dùng dữ liệu cũ nếu cùng extension/profile và kho chưa bị xóa. Dữ liệu không chia sẻ tự động giữa profile/máy hoặc với Python.
+- Nếu tắt máy trước lúc giao dịch hoàn tất, tác vụ đang dở có thể tải lại; khóa duy nhất ngăn tạo hai bản ghi cùng ID. Đây không phải cam kết mỗi URL chỉ được tải đúng một lần trong mọi sự cố.
+- Công ty đã lưu nhưng thiếu trường (review_required) vẫn được coi là đã có. Chưa có chế độ tự cập nhật trường cũ; dữ liệu website thay đổi không tự ghi đè. Hai ID nguồn khác nhau không bị gộp chỉ vì trùng tên/điện thoại.
+
 ## Dữ liệu và quyền
 
 Lấy name, address, phones, emails, websites, source_url, collected_at, sectors, categories, review_required. Thiếu trường được để trống và đánh dấu review_required. Không đoán email, không truy cập website bên ngoài của công ty. Dữ liệu công ty chưa chắc cùng mẫu HTML, cần đối chiếu sau khi chạy thử. CSV trung hòa công thức Excel; số bắt đầu bằng + có thể có dấu nháy để giữ dạng văn bản.
@@ -35,7 +50,7 @@ Khi phát hiện trang chặn/CAPTCHA hoặc không nhận diện được cấu
 
 ## Kiểm thử và giới hạn xác minh
 
-- 7 kiểm thử Node cho URL, nhận diện cấp ngành, khóa chống trùng, robots longest-match/wildcard và CSV an toàn.
+- 8 kiểm thử Node cho URL, nhận diện cấp ngành, khóa chống trùng, robots longest-match/wildcard và CSV an toàn.
 - Harness Chromium kiểm tra trích xuất DOM, IndexedDB, toàn bộ luồng trên trang mẫu, phân trang trước phân ngành kế tiếp, chống trùng/quan hệ ngành, nạp lại dữ liệu và tải CSV. **API Chrome được mô phỏng trong harness**, không phải thử extension đã cài.
 - Đã đối chiếu bộ trích xuất trên HTML thật đã lưu của Kemic (đủ 5 trường), trang danh sách (38 tiêu đề công ty) và lĩnh vực Hóa Chất.
 - Môi trường phát triển cấm tải unpacked extension theo chính sách quản trị (`Loading of unpacked extensions is disabled by the administrator`), nên chưa kiểm chứng bản extension được cài thực tế hoặc việc vượt chặn Trang Vàng trong Chrome người dùng. Cần chạy thử trên máy bạn.

@@ -2,7 +2,7 @@
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.
 
-**Trạng thái ngày 07/11/2026:** đã vượt qua 27 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+**Trạng thái ngày 07/11/2026:** đã vượt qua 28 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
 
 ## Lựa chọn mới: extension trong Chrome đang dùng
 
@@ -79,7 +79,7 @@ Phiên trình duyệt lưu mặc định ở `data/browser-profile/`; các lần
 
 Chạy trong terminal có thể nhập liệu và máy có giao diện màn hình; không dùng tác vụ nền cho chế độ này. Tốc độ vẫn có giới hạn, robots.txt vẫn được kiểm tra. Khi website từ chối truy cập hoặc robots.txt không cho phép, cần chủ nguồn cho phép truy cập/API. Việc mở Chrome không bảo đảm website sẽ cho phép thu thập.
 
-Đã kiểm thử 27 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+Đã kiểm thử 28 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
 
 ## Tùy chọn stealth, proxy và chờ ngẫu nhiên
 
@@ -131,6 +131,16 @@ python crawler.py run --db data/full.sqlite
 ```
 
 retry-errors chỉ đưa tác vụ lỗi về pending; sau đó chạy run. Lỗi chặn giữ nguyên pending và dừng toàn phiên. Khi chưa còn pending, vẫn phải kiểm tra status để bảo đảm không còn error trước khi coi đợt thu thập hoàn tất.
+
+## Chống trùng và thông tin trong lúc chạy
+
+Python dùng khóa `listings:<ID>` làm PRIMARY KEY trong SQLite; `task_key` và quan hệ ngành có UNIQUE. Trước khi tải chi tiết sẽ tra bảng companies, nếu đã có thì không tải lại, chỉ bổ sung ngành và ghi log `BỎ QUA ĐÃ CÓ`. Công ty và trạng thái tác vụ được commit trong cùng giao dịch. Tác vụ done không được chạy lại khi dùng cùng DB; giữ đúng `--db` cũ để tiếp tục.
+
+Log terminal và file .log hiển thị `ĐÃ LƯU` kèm 5 trường, `BỎ QUA ĐÃ CÓ`, tổng số công ty đã lưu, số mới/bỏ qua của lượt chạy, trang chờ/lỗi và ngành/phân ngành. Chỉ thông báo ĐÃ LƯU sau khi commit thành công.
+
+Extension có bảng tiến độ cập nhật mỗi 2 giây, nút mở bảng trong tab riêng, công ty vừa xử lý và 50 sự kiện gần nhất. Xem chi tiết trong hướng dẫn extension.
+
+Điều kiện: cùng kho dữ liệu, không xóa DB/IndexedDB, không đổi profile extension. Hai chế độ không chia sẻ dữ liệu chống trùng với nhau. Nếu mất điện khi trang đang dở, trang đó có thể tải lại nhưng khóa duy nhất không tạo thêm bản ghi cùng ID. Bản đã lưu thiếu trường vẫn được bỏ qua và cần kiểm tra; chưa có cập nhật dữ liệu cũ tự động. Không gộp hai ID nguồn khác nhau theo tên gần giống.
 
 ## Quy tắc truy cập
 

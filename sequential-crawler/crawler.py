@@ -455,6 +455,8 @@ def next_pages(soup, url):
 
 def crawl(store, client, limit, cache):
     done = 0
+    saved = 0
+    skipped = 0
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     while not limit or done < limit:
@@ -464,7 +466,7 @@ def crawl(store, client, limit, cache):
         logging.info('%s %s', kind, url)
         try:
             company_id = identity(url)
-            existing = store.db.execute('SELECT 1 FROM companies WHERE company_id=?', (company_id,)).fetchone() if kind == 'company' else None
+            existing = store.db.execute('SELECT data FROM companies WHERE company_id=?', (company_id,)).fetchone() if kind == 'company' else None
             if not existing:
                 html = client.get(url)
                 (cache / (hashlib.sha256(url.encode()).hexdigest() + '.html')).write_text(html, encoding='utf-8')
@@ -492,6 +494,20 @@ def crawl(store, client, limit, cache):
             store.db.execute("UPDATE tasks SET status='done',error=NULL WHERE id=?", (task_id,))
             store.db.commit()
             done += 1
+            if kind == 'company':
+                if existing:
+                    skipped += 1
+                    data = json.loads(existing[0])
+                    logging.info('BỎ QUA ĐÃ CÓ | %s | %s | chỉ bổ sung quan hệ ngành', company_id, data['name'])
+                else:
+                    saved += 1
+                    logging.info('ĐÃ LƯU | %s | %s | Địa chỉ: %s | SĐT: %s | Email: %s | Website: %s | Cần kiểm tra: %s',
+                                 company_id, data['name'], data['address'] or '-', data['phones'] or '-',
+                                 data['emails'] or '-', data['websites'] or '-', data['review_required'])
+            counts = dict(store.db.execute('SELECT status,count(*) FROM tasks GROUP BY status'))
+            total = store.db.execute('SELECT count(*) FROM companies').fetchone()[0]
+            logging.info('TIẾN ĐỘ | Tổng: %s công ty | Mới lượt này: %s | Bỏ qua lượt này: %s | Trang chờ: %s | Trang lỗi: %s | Ngành: %s | Phân ngành: %s',
+                         total, saved, skipped, counts.get('pending', 0), counts.get('error', 0), sector or '-', category or '-')
         except Halt:
             store.db.rollback()
             raise

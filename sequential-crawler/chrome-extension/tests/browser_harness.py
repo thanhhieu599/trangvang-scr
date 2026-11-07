@@ -9,7 +9,7 @@ SHIM='''(() => {
  const tab={id:1,url:'https://trangvangvietnam.com/',status:'complete'};
  const runtime={id:'fixture-extension',onMessage:event(),onStartup:event(),getURL:p=>'https://trangvangvietnam.com/__extension_test__/'+p};
  runtime.sendMessage=m=>new Promise(resolve=>runtime.onMessage.listeners[0](m,{id:runtime.id,url:location.href},resolve));
- const tabs={onUpdated:event(),onRemoved:event(),get:async()=>({...tab}),query:async()=>[{...tab}],
+ const tabs={create:async props=>{window.__openedDashboard=props.url;return {id:2,url:props.url}},onUpdated:event(),onRemoved:event(),get:async()=>({...tab}),query:async()=>[{...tab}],
  update:async(id,props)=>{tab.url=props.url;tab.status='loading';await window.fixtureNavigate(props.url);tab.status='complete';setTimeout(()=>tabs.onUpdated.emit(id,{status:'complete'}),0);return {...tab}}};
  const alarms={onAlarm:event(),create:async()=>{},clear:async()=>true,fire:name=>alarms.onAlarm.emit({name})};
  window.chrome={runtime,tabs,alarms,scripting:{executeScript:async({func})=>[{result:await window.fixtureRead(func.toString())}]}};
@@ -76,11 +76,18 @@ async def main():
       await ui.evaluate("async()=>{const db=await import('./db.js'),s=await db.state();s.nextAt=0;await db.saveState(s);chrome.alarms.fire('collector-next')}")
     snapshot=await stats()
     assert snapshot['companies']==2 and snapshot['pending']==0,snapshot
+    assert snapshot['config']['savedThisRun']==2 and snapshot['config']['skippedThisRun']==1,snapshot
+    assert any(e['type']=='skipped' for e in snapshot['config']['events']),snapshot
     assert navigation.count(BASE+'listings/1/a.html')==1,navigation
     assert navigation.index(BASE+'categories/1/a.html?page=2')<navigation.index(BASE+'categories/2/b.html'),navigation
     rows=await ui.evaluate("async()=>{const db=await import('./db.js');return db.rows()}")
     first=next(r for r in rows if r['name']=='First')
     assert first['categories']==['A','B'],first
+    await ui.wait_for_function("document.querySelector('#total').textContent==='2' && document.querySelector('#skipped').textContent==='1'")
+    assert 'a@example.test' in await ui.locator('#company').inner_text()
+    assert await ui.locator('#events li').count()>0
+    await ui.locator('#dashboard').click()
+    assert (await ui.evaluate('window.__openedDashboard')).endswith('?tab=1')
     # CSV export initiated by actual popup button.
     async with ui.expect_download() as download:await ui.locator('#export').click()
     downloaded=await download.value
@@ -88,6 +95,6 @@ async def main():
     # Reload simulates a fresh worker module/global state; IndexedDB remains.
     await ui.reload();await ui.evaluate("async()=>{await import('./worker.js');await import('./popup.js')}")
     assert (await stats())['companies']==2
-    print('PASS mocked Chrome API controller: full traversal, pagination order, dedup/memberships, IndexedDB after reload and CSV download')
+    print('PASS mocked Chrome API controller: traversal, dedup/memberships, persistent counters, live progress UI, dashboard link, reload and CSV')
    finally:await context.close()
 asyncio.run(main())

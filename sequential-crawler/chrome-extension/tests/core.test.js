@@ -37,3 +37,10 @@ test('CSV Unicode, quoting, formula safety',()=>{
   assert.ok(csv.startsWith('\uFEFF')); assert.ok(csv.includes("'=1+1"));
   assert.ok(csv.includes('"Hà Nội, ""A"""')); assert.ok(csv.includes("'+84123"));
 });
+test('progress history retains the latest 50 events', async()=>{
+  const {addEvent}=await import('../core.js');const config={};
+  for(let i=0;i<60;i++)addEvent(config,'saved','Company '+i);
+  assert.equal(config.events.length,50);
+  assert.equal(config.events[0].message,'Company 10');
+  assert.equal(config.events.at(-1).message,'Company 59');
+});
