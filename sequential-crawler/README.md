@@ -2,7 +2,13 @@
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.
 
-**Trạng thái ngày 07/11/2026:** đã vượt qua 36 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+**Trạng thái ngày 07/11/2026:** đã vượt qua 48 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+
+## Nhập link danh mục trong dòng lệnh
+
+Mở `chay_python.bat` hoặc chạy `python crawler.py select`, dán link `/categories/...` hay `/gindex/...` khi terminal hỏi. Chương trình chỉ xử lý danh mục đó, tiếp tục hàng đợi tương ứng và dùng chung dữ liệu công ty cũ để chống trùng. Không cần file HTML hoặc extension. Xem [hướng dẫn đầy đủ](PYTHON_GUIDE.md).
+
+Mặc định giới hạn chờ xác minh 120 giây, tải trang 45 giây, trạng thái chờ được ghi rõ trong thống kê. File xuất tách theo danh mục dưới `data/export/`. Giữ nguyên data/ khi cập nhật.
 
 ## Bản Python đang dùng: tự tiếp tục và thống kê
 
@@ -89,7 +95,7 @@ Phiên trình duyệt lưu mặc định ở `data/browser-profile/`; các lần
 
 Chạy trong terminal có thể nhập liệu và máy có giao diện màn hình; không dùng tác vụ nền cho chế độ này. Tốc độ vẫn có giới hạn, robots.txt vẫn được kiểm tra. Khi website từ chối truy cập hoặc robots.txt không cho phép, cần chủ nguồn cho phép truy cập/API. Việc mở Chrome không bảo đảm website sẽ cho phép thu thập.
 
-Đã kiểm thử 36 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+Đã kiểm thử 48 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
 
 ## Tùy chọn stealth, proxy và chờ ngẫu nhiên
 

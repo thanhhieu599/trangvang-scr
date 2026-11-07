@@ -28,6 +28,10 @@ class Halt(RuntimeError):
     pass
 
 
+class PageLoadError(RuntimeError):
+    pass
+
+
 def proxy_options(value):
     """Parse a locally configured proxy without including its secrets in errors."""
     try:
@@ -62,6 +66,25 @@ def canonical(href, base=BASE):
 def identity(url):
     m = re.search(r'/(gindex|categories|listings)/(\d+)', url)
     return ':'.join(m.groups()) if m else url
+
+
+def category_url(value):
+    try: url = canonical(value.strip().strip('<>'))
+    except ValueError: url = None
+    if not url or not re.match(r'^/(categories|gindex)/\d+(?:/|$)', urlsplit(url).path):
+        raise Halt('Cần link danh mục /categories/... hoặc lĩnh vực /gindex/... của Trang Vàng.')
+    return url
+
+
+def prompt_category(previous=None):
+    print('\n=== QUÉT DANH MỤC DO BẠN CHỌN ===')
+    if previous: print('Danh mục gần nhất:', previous)
+    while True:
+        try: value = input('Dán link danh mục [Enter = tiếp tục danh mục gần nhất; q = thoát]: ').strip()
+        except EOFError: raise Halt('Terminal không nhận nhập liệu; dùng --category URL thay thế.') from None
+        if value.lower() == 'q': raise Halt('Người dùng thoát trước khi chạy.')
+        try: return category_url(value or previous or '')
+        except Halt as exc: print(exc)
 
 
 def linked(soup, pattern, base):
@@ -203,13 +226,17 @@ class Client:
 class BrowserClient(Client):
     """Visible browser with a dedicated local profile and manual verification."""
     def __init__(self, delay=5, profile='data/browser-profile', channel=None,
-                 stealth=False, proxy=None, headless=False, jitter=0):
+                 stealth=False, proxy=None, headless=False, jitter=0,
+                 verify_timeout=120, page_timeout=45, on_phase=None):
         super().__init__(delay)
         self.runtime = None
         self.context = None
         self._closing = False
         self.jitter = jitter
         self.headless = headless
+        self.verify_timeout = verify_timeout
+        self.page_timeout = page_timeout
+        self.on_phase = on_phase
         try:
             from playwright.sync_api import sync_playwright
             stealth_plugin = None
@@ -286,15 +313,28 @@ class BrowserClient(Client):
         }''')
 
     def _blocked(self, content):
-        return self.status == 403 or any(marker in content.lower() for marker in (
-            'cf-chl-', 'challenge-platform', 'sorry, you have been blocked',
-            'verify you are human', 'g-recaptcha', 'hcaptcha-container',
-            '<title>just a moment', '<title>attention required'))
+        if self.status == 403: return True
+        lower = content.lower()
+        soup = BeautifulSoup(content, 'html.parser')
+        title = clean(soup.title.get_text()).lower() if soup.title else ''
+        if 'sorry, you have been blocked' in lower or any(x in title for x in ('just a moment', 'attention required')):
+            return True
+        # A legitimate company page may embed a contact-form CAPTCHA or a
+        # background Cloudflare JS detection script. Neither alone is a block.
+        real_content = soup.find('h1') and soup.select_one('a[href^="tel:"],a[href^="mailto:"],[itemprop="address"],a[href*="/gindex/"],a[href*="/categories/"],a[href*="/listings/"]')
+        if real_content: return False
+        return any(marker in lower for marker in ('cf-chl-', 'challenge-platform', 'verify you are human', 'g-recaptcha', 'hcaptcha-container'))
+
+    def _phase(self, text):
+        callback = getattr(self, 'on_phase', None)
+        if callback: callback(phase=text)
 
     def _wait_for_user(self):
         # Only terminal input runs on a worker. All Playwright calls remain on
         # the owning thread, which keeps dispatching route/response events.
         replies = Queue()
+        started = time.monotonic()
+        timeout = getattr(self, 'verify_timeout', 120)
         def read_terminal():
             try:
                 answer = input('Hoàn tất xác minh trong cửa sổ Chrome do chương trình mở. '
@@ -305,6 +345,10 @@ class BrowserClient(Client):
                 replies.put((False, exc))
         Thread(target=read_terminal, name='crawler-terminal', daemon=True).start()
         while True:
+            elapsed = time.monotonic() - started
+            if timeout and elapsed >= timeout:
+                raise Halt(f'Hết {timeout:g} giây chờ xác minh. Đã giữ tiến độ và dừng; không tiếp tục gửi yêu cầu khi bị chặn.')
+            self._phase(f'CHỜ XÁC MINH — còn {max(0, int(timeout-elapsed))}s; xử lý trong Chrome rồi Enter' if timeout else 'CHỜ XÁC MINH — đang chờ bạn nhấn Enter')
             if self.page.is_closed():
                 raise Halt('Cửa sổ/tab Chrome của chương trình đã đóng; tiến độ được giữ. '
                            'Chạy lại và giữ cửa sổ đó mở trong khi xác minh.')
@@ -318,12 +362,15 @@ class BrowserClient(Client):
 
     def request(self, url):
         try:
-            time.sleep(max(0, self.delay - (time.monotonic() - self.last))
-                       + random.uniform(0, getattr(self, 'jitter', 0)))
+            waiting = max(0, self.delay - (time.monotonic() - self.last)) + random.uniform(0, getattr(self, 'jitter', 0))
+            self._phase(f'NGHỈ GIỮA HAI LƯỢT — {waiting:.1f}s')
+            time.sleep(waiting)
             self.last = time.monotonic()
             self.status = None
             self.content_type = ''
-            self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            timeout_ms = getattr(self, 'page_timeout', 45) * 1000
+            self._phase(f'ĐANG TẢI — giới hạn {timeout_ms/1000:g}s')
+            self.page.goto(url, wait_until='domcontentloaded', timeout=timeout_ms)
             content = self._document()
             if self.status in (401, 429):
                 raise Halt(f'Website trả HTTP {self.status}; đã giữ tiến độ, không tiếp tục gửi yêu cầu.')
@@ -335,6 +382,7 @@ class BrowserClient(Client):
                     raise Halt('Gặp trang chặn khi chạy headless. Chạy lại không có --headless '
                                'để kiểm tra/xác minh thủ công. Đã giữ tiến độ.')
                 logging.warning('Cần thao tác thủ công trong cửa sổ trình duyệt tại %s', url)
+                logging.warning('Trạng thái: CHỜ XÁC MINH; giới hạn %ss (0 = không giới hạn).', getattr(self, 'verify_timeout', 120))
                 answer = self._wait_for_user()
                 if answer.strip().lower() == 'q': raise Halt('Người dùng dừng; tiến độ được giữ.')
                 # Flush any final navigation event after confirmation.
@@ -348,8 +396,10 @@ class BrowserClient(Client):
             if self.status is None or not 200 <= self.status < 300:
                 raise Halt(f'Trình duyệt trả HTTP {self.status}; đã giữ tiến độ.')
             if 'robots.txt' not in urlsplit(url).path:
-                self.page.wait_for_selector('h1, a[href*="/gindex/"]', timeout=15000)
+                self._phase('ĐỢI NỘI DUNG TRANG — tối đa 15s')
+                self.page.wait_for_selector('h1, a[href*="/gindex/"]', timeout=min(15000, timeout_ms))
                 content = self._visible_document()
+            self._phase('ĐỌC DỮ LIỆU TRANG')
             return content
         except Halt:
             raise
@@ -359,6 +409,8 @@ class BrowserClient(Client):
             if self.page.is_closed():
                 raise Halt('Cửa sổ/tab Chrome của chương trình đã đóng; đã giữ tiến độ. '
                            'Chạy lại và giữ cửa sổ đó mở.') from None
+            if type(exc).__name__ == 'TimeoutError':
+                raise PageLoadError('Trang tải quá thời hạn; đánh dấu lỗi để xử lý lại sau.') from exc
             raise Halt(f'Trình duyệt gián đoạn ({type(exc).__name__}); đã giữ tiến độ.') from exc
 
     def close(self):
@@ -385,6 +437,7 @@ class BrowserClient(Client):
 
 class Store:
     def __init__(self, path):
+        self.active_scope = None
         self.db = sqlite3.connect(path)
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS tasks (
@@ -394,19 +447,44 @@ class Store:
         CREATE TABLE IF NOT EXISTS memberships (company_id TEXT, sector TEXT, category TEXT,
           UNIQUE(company_id, sector, category));
         CREATE INDEX IF NOT EXISTS tasks_pending_order ON tasks(status,depth DESC,id);
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         ''')
+        if 'scope' not in {row[1] for row in self.db.execute('PRAGMA table_info(tasks)')}:
+            self.db.execute("ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
+        self.db.execute('CREATE INDEX IF NOT EXISTS tasks_scope_order ON tasks(scope,status,depth DESC,id)')
         self.db.commit()
+
+    def restore_scope(self):
+        row = self.db.execute("SELECT value FROM settings WHERE key='active_scope'").fetchone()
+        self.active_scope = row[0] if row and row[0] else None
+
+    def select_scope(self, url):
+        url = category_url(url)
+        self.active_scope = identity(url)
+        self.db.executemany('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',
+                            [('active_scope', self.active_scope), ('active_url', url)])
+        self.db.commit()
+        return url
+
+    def counts(self):
+        if self.active_scope is None:
+            return dict(self.db.execute('SELECT status,count(*) FROM tasks GROUP BY status'))
+        return dict(self.db.execute('SELECT status,count(*) FROM tasks WHERE scope=? GROUP BY status', (self.active_scope,)))
 
     def add(self, url, kind, sector='', category='', depth=0):
         # Listing pages retain their query (pagination); companies have a stable numeric ID.
-        key = json.dumps([kind, url if kind == 'page' else identity(url), sector, category], ensure_ascii=False)
-        self.db.execute('INSERT OR IGNORE INTO tasks(task_key,url,kind,sector,category,depth) VALUES(?,?,?,?,?,?)', (key, url, kind, sector, category, depth))
+        parts = [kind, url if kind == 'page' else identity(url), sector, category]
+        if self.active_scope is not None: parts.append(self.active_scope)
+        key = json.dumps(parts, ensure_ascii=False)
+        self.db.execute('INSERT OR IGNORE INTO tasks(task_key,url,kind,sector,category,depth,scope) VALUES(?,?,?,?,?,?,?)', (key, url, kind, sector, category, depth, self.active_scope or ''))
 
     def next_pending(self):
+        if self.active_scope is not None:
+            return self.db.execute("SELECT id,url,kind,sector,category,depth FROM tasks WHERE scope=? AND status='pending' ORDER BY depth DESC,id ASC LIMIT 1", (self.active_scope,)).fetchone()
         return self.db.execute("SELECT id,url,kind,sector,category,depth FROM tasks WHERE status='pending' ORDER BY depth DESC,id ASC LIMIT 1").fetchone()
 
     def prepare(self, start=None, resume_only=False):
-        count = self.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
+        count = sum(self.counts().values())
         if resume_only and not count:
             raise Halt('Chưa có tiến độ trong DB này. Dùng lệnh run --start URL để bắt đầu.')
         if start is None and count:
@@ -418,7 +496,7 @@ class Store:
         kind = 'company' if path.startswith('/listings/') else 'page' if path.startswith('/categories/') else 'sector' if path.startswith('/gindex/') else 'root'
         # An explicit start may refer to a previously discovered task with a
         # different sector label. Reuse that task instead of adding another seed.
-        exists = self.db.execute('SELECT 1 FROM tasks WHERE kind=? AND url=? LIMIT 1', (kind, url)).fetchone()
+        exists = self.db.execute('SELECT 1 FROM tasks WHERE kind=? AND url=? AND scope=? LIMIT 1', (kind, url, self.active_scope or '')).fetchone()
         if not exists:
             self.add(url, kind, url if kind == 'sector' else '', url if kind == 'page' else '')
             self.db.commit()
@@ -429,9 +507,16 @@ class Store:
         directory.mkdir(parents=True, exist_ok=True)
         columns = FIELDS + ['sectors', 'categories', 'review_required']
         rows = []
-        for company_id, raw in self.db.execute('SELECT company_id,data FROM companies ORDER BY company_id'):
+        selected = None
+        if self.active_scope is not None:
+            selected = {}
+            for url, sector, category in self.db.execute("SELECT url,sector,category FROM tasks WHERE scope=? AND kind='company' AND status='done'", (self.active_scope,)):
+                selected.setdefault(identity(url), []).append((sector, category))
+        records = self.db.execute('SELECT company_id,data FROM companies ORDER BY company_id') if selected is None else (
+            row for key in sorted(selected) if (row := self.db.execute('SELECT company_id,data FROM companies WHERE company_id=?', (key,)).fetchone()))
+        for company_id, raw in records:
             row = json.loads(raw)
-            members = self.db.execute('SELECT sector,category FROM memberships WHERE company_id=?', (company_id,)).fetchall()
+            members = self.db.execute('SELECT sector,category FROM memberships WHERE company_id=?', (company_id,)).fetchall() if selected is None else selected[company_id]
             row['sectors'] = ' | '.join(dict.fromkeys(x[0] for x in members if x[0]))
             row['categories'] = ' | '.join(dict.fromkeys(x[1] for x in members if x[1]))
             rows.append(row)
@@ -452,7 +537,7 @@ class Store:
         sheet.freeze_panes = 'A2'
         sheet.auto_filter.ref = sheet.dimensions
         book.save(directory / 'companies.xlsx')
-        logging.info('Đã xuất %s công ty', len(rows))
+        logging.info('Đã xuất %s công ty | Phạm vi: %s | Thư mục: %s', len(rows), self.active_scope or 'tất cả', directory.resolve())
 
 
 class RunLock:
@@ -494,12 +579,13 @@ class RunLock:
 
 class LiveStats:
     """Read SQLite on a separate connection; never call Playwright from this thread."""
-    def __init__(self, db_path, interval=15):
+    def __init__(self, db_path, interval=15, scope=None):
         self.uri = Path(db_path).resolve().as_uri() + '?mode=ro'
         self.interval = interval
+        self.scope = scope
         self.stopped = Event()
         self.guard = Lock()
-        self.current = {'saved': 0, 'skipped': 0, 'url': '', 'sector': '', 'category': ''}
+        self.current = {'saved': 0, 'skipped': 0, 'url': '', 'sector': '', 'category': '', 'phase': 'CHUẨN BỊ'}
         self.started = time.monotonic()
         self.thread = None
 
@@ -513,12 +599,13 @@ class LiveStats:
         db = sqlite3.connect(self.uri, uri=True, timeout=2)
         try:
             db.execute('BEGIN')
-            counts = dict(db.execute('SELECT status,count(*) FROM tasks GROUP BY status'))
+            counts = dict(db.execute('SELECT status,count(*) FROM tasks GROUP BY status')) if self.scope is None else dict(db.execute('SELECT status,count(*) FROM tasks WHERE scope=? GROUP BY status', (self.scope,)))
             total = db.execute('SELECT count(*) FROM companies').fetchone()[0]
             db.rollback()
         finally: db.close()
         elapsed = max(1, time.monotonic() - self.started)
-        logging.info('THỐNG KÊ | Tổng kho: %s | Mới lượt này: %s | Bỏ qua: %s | Tác vụ xong: %s | Chờ: %s | Lỗi: %s | Đã chạy: %.0fs | Tốc độ: %.1f công ty mới/phút | Ngành: %s | Phân ngành: %s | URL: %s',
+        logging.info('THỐNG KÊ | Trạng thái: %s | Phạm vi: %s | Tổng kho: %s | Mới lượt này: %s | Bỏ qua: %s | Tác vụ xong: %s | Chờ: %s | Lỗi: %s | Đã chạy: %.0fs | Tốc độ: %.1f công ty mới/phút | Ngành: %s | Phân ngành: %s | URL: %s',
+                     current['phase'], self.scope or 'toàn bộ hàng đợi',
                      total, current['saved'], current['skipped'], counts.get('done', 0), counts.get('pending', 0), counts.get('error', 0),
                      elapsed, current['saved'] * 60 / elapsed, current['sector'] or '-', current['category'] or '-', current['url'] or '-')
 
@@ -582,7 +669,7 @@ def crawl(store, client, limit, cache, observer=None):
         if not task: break
         task_id, url, kind, sector, category, depth = task
         logging.info('ĐANG XỬ LÝ | %s | Ngành: %s | Phân ngành: %s | %s', kind, sector or '-', category or '-', url)
-        if observer: observer.update(url=url, sector=sector, category=category)
+        if observer: observer.update(url=url, sector=sector, category=category, phase='KIỂM TRA DỮ LIỆU ĐÃ CÓ')
         try:
             company_id = identity(url)
             existing = store.db.execute('SELECT data FROM companies WHERE company_id=?', (company_id,)).fetchone() if kind == 'company' else None
@@ -600,10 +687,12 @@ def crawl(store, client, limit, cache, observer=None):
                 if not children: raise ValueError('Không tìm thấy lĩnh vực /gindex/; cần kiểm tra HTML')
                 for dest, name in children: store.add(dest, 'sector', name, '', depth + 1)
             elif kind == 'sector':
+                if soup.h1: sector = clean(soup.h1.get_text(' ', strip=True))
                 children = list(linked(soup, r'^/categories/\d+', url))
                 if not children: raise ValueError('Không tìm thấy phân ngành /categories/; cần kiểm tra HTML')
                 for dest, name in children: store.add(dest, 'page', sector, name, depth + 1)
             elif kind == 'page':
+                if soup.h1: category = clean(soup.h1.get_text(' ', strip=True))
                 listing_scope = BeautifulSoup(''.join(str(n) for n in soup.select('h2.tvx-cn')), 'html.parser') if soup.select_one('h2.tvx-cn') else soup
                 children = list(linked(listing_scope, r'^/listings/\d+', url))
                 if not children: raise ValueError('Không tìm thấy công ty /listings/; cần kiểm tra HTML')
@@ -623,9 +712,9 @@ def crawl(store, client, limit, cache, observer=None):
                     logging.info('ĐÃ LƯU | %s | %s | Địa chỉ: %s | SĐT: %s | Email: %s | Website: %s | Cần kiểm tra: %s',
                                  company_id, data['name'], data['address'] or '-', data['phones'] or '-',
                                  data['emails'] or '-', data['websites'] or '-', data['review_required'])
-            counts = dict(store.db.execute('SELECT status,count(*) FROM tasks GROUP BY status'))
+            counts = store.counts()
             total = store.db.execute('SELECT count(*) FROM companies').fetchone()[0]
-            if observer: observer.update(saved=saved, skipped=skipped)
+            if observer: observer.update(saved=saved, skipped=skipped, sector=sector, category=category, phase='ĐÃ XỬ LÝ — CHỌN TRANG TIẾP THEO')
             logging.info('TIẾN ĐỘ | Tổng: %s công ty | Mới lượt này: %s | Bỏ qua lượt này: %s | Trang chờ: %s | Trang lỗi: %s | Ngành: %s | Phân ngành: %s',
                          total, saved, skipped, counts.get('pending', 0), counts.get('error', 0), sector or '-', category or '-')
         except Halt:
@@ -635,16 +724,19 @@ def crawl(store, client, limit, cache, observer=None):
             store.db.rollback()
             store.db.execute("UPDATE tasks SET status='error',error=? WHERE id=?", (str(exc), task_id))
             store.db.commit()
-            logging.exception('Lỗi trang %s; đánh dấu error', url)
+            if observer: observer.update(phase='TRANG LỖI — CHUYỂN TÁC VỤ TIẾP THEO')
+            if isinstance(exc, PageLoadError): logging.warning('Lỗi trang %s: %s', url, exc)
+            else: logging.exception('Lỗi trang %s; đánh dấu error', url)
     return done
 
 
 def main():
     parser = argparse.ArgumentParser(description='Thu thập Trang Vàng có lưu tiến độ')
-    parser.add_argument('command', choices=['run', 'resume', 'export', 'status', 'retry-errors'])
+    parser.add_argument('command', nargs='?', default='select', choices=['select', 'run', 'resume', 'export', 'status', 'retry-errors'])
     parser.add_argument('--start', help='URL bắt đầu; nếu bỏ qua thì tiếp tục hàng đợi cũ, DB mới bắt đầu ở trang chủ')
+    parser.add_argument('--category', help='Chỉ quét danh mục /categories/ hoặc lĩnh vực /gindex/ này; select sẽ hỏi nếu bỏ qua')
     parser.add_argument('--db', default='data/crawler.sqlite')
-    parser.add_argument('--out', default='data/export')
+    parser.add_argument('--out', help='Thư mục xuất; mặc định cạnh DB, tách theo danh mục đang chọn')
     parser.add_argument('--delay', type=float, default=5)
     parser.add_argument('--browser', action='store_true', help='Mở trình duyệt có giao diện, xác minh thủ công nếu cần')
     parser.add_argument('--browser-channel', choices=['chrome', 'msedge'], help='Dùng Chrome hoặc Edge đã cài; mặc định Chromium')
@@ -655,7 +747,17 @@ def main():
     parser.add_argument('--jitter', type=float, default=0, help='Chờ thêm ngẫu nhiên 0..N giây trong chế độ browser')
     parser.add_argument('--max-pages', type=int, default=0, help='0 = không giới hạn; tính cả trang chi tiết')
     parser.add_argument('--stats-every', type=float, default=15, help='In thống kê mỗi N giây; 0 = chỉ in sau mỗi tác vụ')
+    parser.add_argument('--verify-timeout', type=float, default=120, help='Chờ xác minh tối đa N giây; 0 = chờ không giới hạn')
+    parser.add_argument('--page-timeout', type=float, default=45, help='Giới hạn tải một trang (giây); quá hạn ghi lỗi và chuyển trang khác')
     args = parser.parse_args()
+    if args.command == 'select':
+        args.browser = True
+        args.browser_channel = args.browser_channel or 'chrome'
+        args.stealth = True
+    if args.start and args.category: parser.error('Chỉ dùng một trong --start hoặc --category')
+    if args.category and args.command not in ('select', 'run'): parser.error('--category dùng với select hoặc run')
+    if args.verify_timeout != 0 and not 1 <= args.verify_timeout <= 3600: parser.error('--verify-timeout phải bằng 0 hoặc nằm trong 1..3600 giây')
+    if not 1 <= args.page_timeout <= 300: parser.error('--page-timeout phải nằm trong 1..300 giây')
     if args.max_pages < 0: parser.error('--max-pages phải >= 0')
     if args.command == 'resume' and args.start: parser.error('resume tiếp tục hàng đợi cũ; không dùng --start')
     if args.stats_every != 0 and not 1 <= args.stats_every <= 3600: parser.error('--stats-every phải bằng 0 hoặc nằm trong 1..3600 giây')
@@ -670,13 +772,23 @@ def main():
     client = None
     run_lock = None
     observer = None
-    export_on_exit = args.command not in ('run', 'resume', 'retry-errors')
+    export_on_exit = args.command not in ('select', 'run', 'resume', 'retry-errors')
     try:
-        if args.command in ('run', 'resume', 'retry-errors'):
+        if args.command in ('select', 'run', 'resume', 'retry-errors'):
             run_lock = RunLock(args.db)
             run_lock.acquire()
             export_on_exit = True
-        if args.command in ('run', 'resume'):
+        store.restore_scope()
+        if args.command == 'select' or args.category:
+            previous = store.db.execute("SELECT value FROM settings WHERE key='active_url'").fetchone()
+            chosen = args.category or args.start or prompt_category(previous[0] if previous else None)
+            args.start = store.select_scope(chosen)
+            logging.info('CHỈ QUÉT DANH MỤC | %s | %s', store.active_scope, args.start)
+        elif args.start:
+            store.active_scope = None
+            store.db.execute("DELETE FROM settings WHERE key IN ('active_scope','active_url')")
+            store.db.commit()
+        if args.command in ('select', 'run', 'resume'):
             following = store.prepare(args.start, resume_only=args.command == 'resume')
             if following:
                 logging.info('TIẾP TỤC TỪ | %s | %s', following[2], following[1])
@@ -690,27 +802,36 @@ def main():
             profile_tag = ('browser-profile-proxy-' + hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()[:12]) if proxy else 'browser-profile'
             profile = args.profile or Path(args.db).parent / profile_tag
             client = LazyClient(lambda: BrowserClient(args.delay, profile, args.browser_channel,
-                                    stealth=args.stealth, proxy=proxy, headless=args.headless, jitter=args.jitter)
+                                    stealth=args.stealth, proxy=proxy, headless=args.headless, jitter=args.jitter,
+                                    verify_timeout=args.verify_timeout, page_timeout=args.page_timeout, on_phase=observer.update)
                                 if args.browser else Client(args.delay))
-            observer = LiveStats(args.db, args.stats_every)
+            observer = LiveStats(args.db, args.stats_every, scope=store.active_scope)
             observer.report()
             observer.start()
             crawl(store, client, args.max_pages, Path(args.db).parent / 'html', observer=observer)
             if store.next_pending():
+                observer.update(phase='ĐÃ ĐẠT GIỚI HẠN LƯỢT CHẠY')
                 logging.info('Đã đạt giới hạn lượt chạy. Chạy lại cùng lệnh hoặc dùng resume để tiếp tục.')
-            elif store.db.execute("SELECT count(*) FROM tasks WHERE status='error'").fetchone()[0]:
+            elif store.counts().get('error', 0):
+                observer.update(phase='KẾT THÚC LƯỢT — CÒN TRANG LỖI CẦN KIỂM TRA')
                 logging.warning('Hết hàng đợi pending nhưng còn trang lỗi. Kiểm tra status, rồi dùng retry-errors để thử lại.')
             else:
+                observer.update(phase='HOÀN TẤT HÀNG ĐỢI ĐANG CHỌN')
                 logging.info('HOÀN TẤT | Đã xử lý hết hàng đợi.')
         elif args.command == 'retry-errors':
-            store.db.execute("UPDATE tasks SET status='pending',error=NULL WHERE status='error'")
+            if store.active_scope is None:
+                store.db.execute("UPDATE tasks SET status='pending',error=NULL WHERE status='error'")
+            else:
+                store.db.execute("UPDATE tasks SET status='pending',error=NULL WHERE status='error' AND scope=?", (store.active_scope,))
             store.db.commit()
         elif args.command == 'status':
-            print(dict(store.db.execute('SELECT status,count(*) FROM tasks GROUP BY status')))
+            print('scope:', store.active_scope or 'toàn bộ hàng đợi')
+            print(store.counts())
             print('companies:', store.db.execute('SELECT count(*) FROM companies').fetchone()[0])
             following = store.next_pending()
             print('next_url:', following[1] if following else 'Không còn trang chờ')
     except (Halt, KeyboardInterrupt) as exc:
+        if observer: observer.update(phase='ĐÃ TẠM DỪNG — ' + str(exc))
         logging.warning('Đã tạm dừng: %s', exc)
         code = 2
     finally:
@@ -722,7 +843,9 @@ def main():
             if client: client.close()
         finally:
             try:
-                if export_on_exit: store.export(args.out)
+                output = Path(args.out) if args.out else Path(args.db).parent / 'export'
+                if not args.out and store.active_scope: output /= store.active_scope.replace(':', '_')
+                if export_on_exit: store.export(output)
             finally:
                 try:
                     store.db.close()
