@@ -2,7 +2,17 @@
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.
 
-**Trạng thái ngày 07/11/2026:** đã vượt qua 28 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+**Trạng thái ngày 07/11/2026:** đã vượt qua 36 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+
+## Bản Python đang dùng: tự tiếp tục và thống kê
+
+Xem [hướng dẫn Python](PYTHON_GUIDE.md). Chạy không giới hạn, tự tiếp tục hàng đợi đã lưu:
+
+```powershell
+python crawler.py run --browser --browser-channel chrome --stealth --delay 8 --jitter 2 --stats-every 15
+```
+
+Có thể dùng lệnh `resume` thay cho `run` để chỉ tiếp tục DB cũ. Giữ nguyên `data/` khi cập nhật. Đã bổ sung khóa một tiến trình/DB, chọn trang pending trước khi mở Chrome và thống kê định kỳ trong lúc tải/chờ xác minh.
 
 ## Lựa chọn mới: extension trong Chrome đang dùng
 
@@ -79,7 +89,7 @@ Phiên trình duyệt lưu mặc định ở `data/browser-profile/`; các lần
 
 Chạy trong terminal có thể nhập liệu và máy có giao diện màn hình; không dùng tác vụ nền cho chế độ này. Tốc độ vẫn có giới hạn, robots.txt vẫn được kiểm tra. Khi website từ chối truy cập hoặc robots.txt không cho phép, cần chủ nguồn cho phép truy cập/API. Việc mở Chrome không bảo đảm website sẽ cho phép thu thập.
 
-Đã kiểm thử 28 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+Đã kiểm thử 36 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
 
 ## Tùy chọn stealth, proxy và chờ ngẫu nhiên
 

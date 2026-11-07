@@ -5,3 +5,4 @@ browser-profile/
 *.sqlite
 *.sqlite-*
 *.log
+*.sqlite.lock

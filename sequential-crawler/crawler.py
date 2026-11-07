@@ -11,7 +11,7 @@ import re
 import sqlite3
 import time
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Lock, Thread
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs, unquote
@@ -393,6 +393,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS companies (company_id TEXT PRIMARY KEY, data TEXT);
         CREATE TABLE IF NOT EXISTS memberships (company_id TEXT, sector TEXT, category TEXT,
           UNIQUE(company_id, sector, category));
+        CREATE INDEX IF NOT EXISTS tasks_pending_order ON tasks(status,depth DESC,id);
         ''')
         self.db.commit()
 
@@ -400,6 +401,28 @@ class Store:
         # Listing pages retain their query (pagination); companies have a stable numeric ID.
         key = json.dumps([kind, url if kind == 'page' else identity(url), sector, category], ensure_ascii=False)
         self.db.execute('INSERT OR IGNORE INTO tasks(task_key,url,kind,sector,category,depth) VALUES(?,?,?,?,?,?)', (key, url, kind, sector, category, depth))
+
+    def next_pending(self):
+        return self.db.execute("SELECT id,url,kind,sector,category,depth FROM tasks WHERE status='pending' ORDER BY depth DESC,id ASC LIMIT 1").fetchone()
+
+    def prepare(self, start=None, resume_only=False):
+        count = self.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
+        if resume_only and not count:
+            raise Halt('Chưa có tiến độ trong DB này. Dùng lệnh run --start URL để bắt đầu.')
+        if start is None and count:
+            logging.info('Dùng hàng đợi đã lưu, không thêm lại URL bắt đầu.')
+            return self.next_pending()
+        url = canonical(start or BASE)
+        if not url: raise Halt('URL phải thuộc trangvangvietnam.com')
+        path = urlsplit(url).path
+        kind = 'company' if path.startswith('/listings/') else 'page' if path.startswith('/categories/') else 'sector' if path.startswith('/gindex/') else 'root'
+        # An explicit start may refer to a previously discovered task with a
+        # different sector label. Reuse that task instead of adding another seed.
+        exists = self.db.execute('SELECT 1 FROM tasks WHERE kind=? AND url=? LIMIT 1', (kind, url)).fetchone()
+        if not exists:
+            self.add(url, kind, url if kind == 'sector' else '', url if kind == 'page' else '')
+            self.db.commit()
+        return self.next_pending()
 
     def export(self, directory):
         directory = Path(directory)
@@ -432,6 +455,101 @@ class Store:
         logging.info('Đã xuất %s công ty', len(rows))
 
 
+class RunLock:
+    """One crawler process per SQLite file; OS releases the lock after a crash."""
+    def __init__(self, db_path):
+        self.path = str(Path(db_path).resolve()) + '.lock'
+        self.handle = None
+
+    def acquire(self):
+        self.handle = open(self.path, 'a+b')
+        try:
+            self.handle.seek(0)
+            if not self.handle.read(1):
+                self.handle.write(b'0'); self.handle.flush()
+            self.handle.seek(0)
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.handle.close(); self.handle = None
+            raise Halt('Đã có tiến trình crawler đang dùng DB này. Dừng tiến trình đó trước khi chạy tiếp.') from None
+
+    def close(self):
+        if self.handle:
+            try:
+                self.handle.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.handle.close(); self.handle = None
+
+
+class LiveStats:
+    """Read SQLite on a separate connection; never call Playwright from this thread."""
+    def __init__(self, db_path, interval=15):
+        self.uri = Path(db_path).resolve().as_uri() + '?mode=ro'
+        self.interval = interval
+        self.stopped = Event()
+        self.guard = Lock()
+        self.current = {'saved': 0, 'skipped': 0, 'url': '', 'sector': '', 'category': ''}
+        self.started = time.monotonic()
+        self.thread = None
+
+    def update(self, **values):
+        with self.guard: self.current.update(values)
+
+    def report(self):
+        with self.guard: current = dict(self.current)
+        # This connection belongs only to the calling thread. Short read
+        # transactions allow the main crawler to keep committing progress.
+        db = sqlite3.connect(self.uri, uri=True, timeout=2)
+        try:
+            db.execute('BEGIN')
+            counts = dict(db.execute('SELECT status,count(*) FROM tasks GROUP BY status'))
+            total = db.execute('SELECT count(*) FROM companies').fetchone()[0]
+            db.rollback()
+        finally: db.close()
+        elapsed = max(1, time.monotonic() - self.started)
+        logging.info('THỐNG KÊ | Tổng kho: %s | Mới lượt này: %s | Bỏ qua: %s | Tác vụ xong: %s | Chờ: %s | Lỗi: %s | Đã chạy: %.0fs | Tốc độ: %.1f công ty mới/phút | Ngành: %s | Phân ngành: %s | URL: %s',
+                     total, current['saved'], current['skipped'], counts.get('done', 0), counts.get('pending', 0), counts.get('error', 0),
+                     elapsed, current['saved'] * 60 / elapsed, current['sector'] or '-', current['category'] or '-', current['url'] or '-')
+
+    def start(self):
+        if not self.interval: return
+        def watch():
+            while not self.stopped.wait(self.interval):
+                try: self.report()
+                except sqlite3.Error: logging.warning('Chưa đọc được thống kê; sẽ thử ở lần cập nhật tiếp theo.')
+        self.thread = Thread(target=watch, name='crawler-statistics', daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stopped.set()
+        if self.thread: self.thread.join()
+
+
+class LazyClient:
+    """Open Chrome only when the next task actually needs a network request."""
+    def __init__(self, factory):
+        self.factory = factory
+        self.client = None
+
+    def get(self, url):
+        if self.client is None: self.client = self.factory()
+        return self.client.get(url)
+
+    def close(self):
+        if self.client is not None: self.client.close()
+
+
 def next_pages(soup, url):
     current = urlsplit(url)
     params = parse_qs(current.query)
@@ -453,17 +571,18 @@ def next_pages(soup, url):
     elif numbered: yield min(numbered)[1]
 
 
-def crawl(store, client, limit, cache):
+def crawl(store, client, limit, cache, observer=None):
     done = 0
     saved = 0
     skipped = 0
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     while not limit or done < limit:
-        task = store.db.execute("SELECT id,url,kind,sector,category,depth FROM tasks WHERE status='pending' ORDER BY depth DESC,id ASC LIMIT 1").fetchone()
+        task = store.next_pending()
         if not task: break
         task_id, url, kind, sector, category, depth = task
-        logging.info('%s %s', kind, url)
+        logging.info('ĐANG XỬ LÝ | %s | Ngành: %s | Phân ngành: %s | %s', kind, sector or '-', category or '-', url)
+        if observer: observer.update(url=url, sector=sector, category=category)
         try:
             company_id = identity(url)
             existing = store.db.execute('SELECT data FROM companies WHERE company_id=?', (company_id,)).fetchone() if kind == 'company' else None
@@ -506,6 +625,7 @@ def crawl(store, client, limit, cache):
                                  data['emails'] or '-', data['websites'] or '-', data['review_required'])
             counts = dict(store.db.execute('SELECT status,count(*) FROM tasks GROUP BY status'))
             total = store.db.execute('SELECT count(*) FROM companies').fetchone()[0]
+            if observer: observer.update(saved=saved, skipped=skipped)
             logging.info('TIẾN ĐỘ | Tổng: %s công ty | Mới lượt này: %s | Bỏ qua lượt này: %s | Trang chờ: %s | Trang lỗi: %s | Ngành: %s | Phân ngành: %s',
                          total, saved, skipped, counts.get('pending', 0), counts.get('error', 0), sector or '-', category or '-')
         except Halt:
@@ -521,8 +641,8 @@ def crawl(store, client, limit, cache):
 
 def main():
     parser = argparse.ArgumentParser(description='Thu thập Trang Vàng có lưu tiến độ')
-    parser.add_argument('command', choices=['run', 'export', 'status', 'retry-errors'])
-    parser.add_argument('--start', default=BASE)
+    parser.add_argument('command', choices=['run', 'resume', 'export', 'status', 'retry-errors'])
+    parser.add_argument('--start', help='URL bắt đầu; nếu bỏ qua thì tiếp tục hàng đợi cũ, DB mới bắt đầu ở trang chủ')
     parser.add_argument('--db', default='data/crawler.sqlite')
     parser.add_argument('--out', default='data/export')
     parser.add_argument('--delay', type=float, default=5)
@@ -534,24 +654,34 @@ def main():
     parser.add_argument('--proxy-env', metavar='VARIABLE', help='Tên biến môi trường chứa URL proxy (không nhập mật khẩu vào lệnh)')
     parser.add_argument('--jitter', type=float, default=0, help='Chờ thêm ngẫu nhiên 0..N giây trong chế độ browser')
     parser.add_argument('--max-pages', type=int, default=0, help='0 = không giới hạn; tính cả trang chi tiết')
+    parser.add_argument('--stats-every', type=float, default=15, help='In thống kê mỗi N giây; 0 = chỉ in sau mỗi tác vụ')
     args = parser.parse_args()
     if args.max_pages < 0: parser.error('--max-pages phải >= 0')
+    if args.command == 'resume' and args.start: parser.error('resume tiếp tục hàng đợi cũ; không dùng --start')
+    if args.stats_every != 0 and not 1 <= args.stats_every <= 3600: parser.error('--stats-every phải bằng 0 hoặc nằm trong 1..3600 giây')
     if not args.browser and (args.stealth or args.headless or args.proxy_env or args.jitter):
         parser.error('--stealth/--headless/--proxy-env/--jitter cần --browser')
     if args.jitter < 0 or args.jitter > 300: parser.error('--jitter phải nằm trong 0..300 giây')
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=[logging.StreamHandler(), logging.FileHandler(str(Path(args.db).with_suffix('.log')), encoding='utf-8')])
+    log_handlers = [logging.StreamHandler(), logging.FileHandler(str(Path(args.db).with_suffix('.log')), encoding='utf-8')]
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=log_handlers)
     store = Store(args.db)
     code = 0
     client = None
+    run_lock = None
+    observer = None
+    export_on_exit = args.command not in ('run', 'resume', 'retry-errors')
     try:
-        if args.command == 'run':
-            url = canonical(args.start)
-            if not url: parser.error('URL phải thuộc trangvangvietnam.com')
-            path = urlsplit(url).path
-            kind = 'company' if path.startswith('/listings/') else 'page' if path.startswith('/categories/') else 'sector' if path.startswith('/gindex/') else 'root'
-            store.add(url, kind, url if kind == 'sector' else '', url if kind == 'page' else '')
-            store.db.commit()
+        if args.command in ('run', 'resume', 'retry-errors'):
+            run_lock = RunLock(args.db)
+            run_lock.acquire()
+            export_on_exit = True
+        if args.command in ('run', 'resume'):
+            following = store.prepare(args.start, resume_only=args.command == 'resume')
+            if following:
+                logging.info('TIẾP TỤC TỪ | %s | %s', following[2], following[1])
+            else:
+                logging.info('Không còn tác vụ pending. Không cần mở trình duyệt.')
             proxy = None
             if args.proxy_env:
                 value = os.environ.get(args.proxy_env)
@@ -559,27 +689,48 @@ def main():
                 proxy = proxy_options(value)
             profile_tag = ('browser-profile-proxy-' + hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()[:12]) if proxy else 'browser-profile'
             profile = args.profile or Path(args.db).parent / profile_tag
-            client = (BrowserClient(args.delay, profile, args.browser_channel,
+            client = LazyClient(lambda: BrowserClient(args.delay, profile, args.browser_channel,
                                     stealth=args.stealth, proxy=proxy, headless=args.headless, jitter=args.jitter)
-                      if args.browser else Client(args.delay))
-            crawl(store, client, args.max_pages, Path(args.db).parent / 'html')
+                                if args.browser else Client(args.delay))
+            observer = LiveStats(args.db, args.stats_every)
+            observer.report()
+            observer.start()
+            crawl(store, client, args.max_pages, Path(args.db).parent / 'html', observer=observer)
+            if store.next_pending():
+                logging.info('Đã đạt giới hạn lượt chạy. Chạy lại cùng lệnh hoặc dùng resume để tiếp tục.')
+            elif store.db.execute("SELECT count(*) FROM tasks WHERE status='error'").fetchone()[0]:
+                logging.warning('Hết hàng đợi pending nhưng còn trang lỗi. Kiểm tra status, rồi dùng retry-errors để thử lại.')
+            else:
+                logging.info('HOÀN TẤT | Đã xử lý hết hàng đợi.')
         elif args.command == 'retry-errors':
             store.db.execute("UPDATE tasks SET status='pending',error=NULL WHERE status='error'")
             store.db.commit()
         elif args.command == 'status':
             print(dict(store.db.execute('SELECT status,count(*) FROM tasks GROUP BY status')))
             print('companies:', store.db.execute('SELECT count(*) FROM companies').fetchone()[0])
+            following = store.next_pending()
+            print('next_url:', following[1] if following else 'Không còn trang chờ')
     except (Halt, KeyboardInterrupt) as exc:
         logging.warning('Đã tạm dừng: %s', exc)
         code = 2
     finally:
+        if observer:
+            observer.stop()
+            try: observer.report()
+            except sqlite3.Error: logging.warning('Không đọc được thống kê cuối phiên.')
         try:
             if client: client.close()
         finally:
             try:
-                store.export(args.out)
+                if export_on_exit: store.export(args.out)
             finally:
-                store.db.close()
+                try:
+                    store.db.close()
+                    if run_lock: run_lock.close()
+                finally:
+                    for handler in log_handlers:
+                        logging.getLogger().removeHandler(handler)
+                        handler.close()
     return code
 
 if __name__ == '__main__':
