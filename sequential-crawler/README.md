@@ -1,3 +1,19 @@
+# Trang Vàng Python — Ver 2.0
+
+Bản tăng tốc nằm trên nhánh riêng `codex/python-v2-fast`, giữ cơ chế chọn danh mục, chống trùng và lưu tiến độ. Bản v1 vẫn ở nhánh `codex/sequential-company-crawler`.
+
+Mở **chay_v2.bat** hoặc chạy:
+
+```powershell
+python crawler_v2.py select
+```
+
+Dán link khi terminal hỏi. [Hướng dẫn v2, cách mang dữ liệu cũ và kết quả đo tốc độ](V2_GUIDE.md).
+
+Đã qua 61 kiểm thử. Bài đo Chromium trên trang mẫu: 18,439s → 10,083s cho 3 trang có quảng cáo chậm; **không phải cam kết tăng 1,83 lần trên nguồn thật**.
+
+---
+
 # Bộ thu thập Trang Vàng Việt Nam
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.

@@ -97,7 +97,7 @@ def linked(soup, pattern, base):
 
 
 def parse_company(html, url):
-    soup = BeautifulSoup(html, 'html.parser')
+    soup = html if isinstance(html, BeautifulSoup) else BeautifulSoup(html, 'html.parser')
     data = {k: '' for k in FIELDS}
     data['source_url'] = url
     data['collected_at'] = datetime.now(timezone.utc).isoformat()
@@ -658,7 +658,7 @@ def next_pages(soup, url):
     elif numbered: yield min(numbered)[1]
 
 
-def crawl(store, client, limit, cache, observer=None):
+def crawl(store, client, limit, cache, observer=None, save_html=True, progress_every=1):
     done = 0
     saved = 0
     skipped = 0
@@ -675,11 +675,12 @@ def crawl(store, client, limit, cache, observer=None):
             existing = store.db.execute('SELECT data FROM companies WHERE company_id=?', (company_id,)).fetchone() if kind == 'company' else None
             if not existing:
                 html = client.get(url)
-                (cache / (hashlib.sha256(url.encode()).hexdigest() + '.html')).write_text(html, encoding='utf-8')
+                if save_html:
+                    (cache / (hashlib.sha256(url.encode()).hexdigest() + '.html')).write_text(html, encoding='utf-8')
                 soup = BeautifulSoup(html, 'html.parser')
             if kind == 'company':
                 if not existing:
-                    data = parse_company(html, url)
+                    data = parse_company(soup, url)
                     store.db.execute('INSERT INTO companies VALUES(?,?)', (company_id, json.dumps(data, ensure_ascii=False)))
                 store.db.execute('INSERT OR IGNORE INTO memberships VALUES(?,?,?)', (company_id, sector, category))
             elif kind == 'root':
@@ -712,11 +713,12 @@ def crawl(store, client, limit, cache, observer=None):
                     logging.info('ĐÃ LƯU | %s | %s | Địa chỉ: %s | SĐT: %s | Email: %s | Website: %s | Cần kiểm tra: %s',
                                  company_id, data['name'], data['address'] or '-', data['phones'] or '-',
                                  data['emails'] or '-', data['websites'] or '-', data['review_required'])
-            counts = store.counts()
-            total = store.db.execute('SELECT count(*) FROM companies').fetchone()[0]
             if observer: observer.update(saved=saved, skipped=skipped, sector=sector, category=category, phase='ĐÃ XỬ LÝ — CHỌN TRANG TIẾP THEO')
-            logging.info('TIẾN ĐỘ | Tổng: %s công ty | Mới lượt này: %s | Bỏ qua lượt này: %s | Trang chờ: %s | Trang lỗi: %s | Ngành: %s | Phân ngành: %s',
-                         total, saved, skipped, counts.get('pending', 0), counts.get('error', 0), sector or '-', category or '-')
+            if done % progress_every == 0:
+                counts = store.counts()
+                total = store.db.execute('SELECT count(*) FROM companies').fetchone()[0]
+                logging.info('TIẾN ĐỘ | Tổng: %s công ty | Mới lượt này: %s | Bỏ qua lượt này: %s | Trang chờ: %s | Trang lỗi: %s | Ngành: %s | Phân ngành: %s',
+                             total, saved, skipped, counts.get('pending', 0), counts.get('error', 0), sector or '-', category or '-')
         except Halt:
             store.db.rollback()
             raise
@@ -730,7 +732,7 @@ def crawl(store, client, limit, cache, observer=None):
     return done
 
 
-def main():
+def main(browser_factory=None, store_factory=None):
     parser = argparse.ArgumentParser(description='Thu thập Trang Vàng có lưu tiến độ')
     parser.add_argument('command', nargs='?', default='select', choices=['select', 'run', 'resume', 'export', 'status', 'retry-errors'])
     parser.add_argument('--start', help='URL bắt đầu; nếu bỏ qua thì tiếp tục hàng đợi cũ, DB mới bắt đầu ở trang chủ')
@@ -749,6 +751,8 @@ def main():
     parser.add_argument('--stats-every', type=float, default=15, help='In thống kê mỗi N giây; 0 = chỉ in sau mỗi tác vụ')
     parser.add_argument('--verify-timeout', type=float, default=120, help='Chờ xác minh tối đa N giây; 0 = chờ không giới hạn')
     parser.add_argument('--page-timeout', type=float, default=45, help='Giới hạn tải một trang (giây); quá hạn ghi lỗi và chuyển trang khác')
+    parser.add_argument('--no-html-cache', action='store_true', help='Không lưu bản HTML cho mỗi trang; dữ liệu và tiến độ vẫn commit vào SQLite')
+    parser.add_argument('--progress-every', type=int, default=1, help='In tổng kết sau N tác vụ; log công ty và thống kê định kỳ vẫn hoạt động')
     args = parser.parse_args()
     if args.command == 'select':
         args.browser = True
@@ -759,6 +763,7 @@ def main():
     if args.verify_timeout != 0 and not 1 <= args.verify_timeout <= 3600: parser.error('--verify-timeout phải bằng 0 hoặc nằm trong 1..3600 giây')
     if not 1 <= args.page_timeout <= 300: parser.error('--page-timeout phải nằm trong 1..300 giây')
     if args.max_pages < 0: parser.error('--max-pages phải >= 0')
+    if not 1 <= args.progress_every <= 1000: parser.error('--progress-every phải nằm trong 1..1000')
     if args.command == 'resume' and args.start: parser.error('resume tiếp tục hàng đợi cũ; không dùng --start')
     if args.stats_every != 0 and not 1 <= args.stats_every <= 3600: parser.error('--stats-every phải bằng 0 hoặc nằm trong 1..3600 giây')
     if not args.browser and (args.stealth or args.headless or args.proxy_env or args.jitter):
@@ -767,7 +772,7 @@ def main():
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     log_handlers = [logging.StreamHandler(), logging.FileHandler(str(Path(args.db).with_suffix('.log')), encoding='utf-8')]
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=log_handlers)
-    store = Store(args.db)
+    store = (store_factory or Store)(args.db)
     code = 0
     client = None
     run_lock = None
@@ -801,14 +806,15 @@ def main():
                 proxy = proxy_options(value)
             profile_tag = ('browser-profile-proxy-' + hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()[:12]) if proxy else 'browser-profile'
             profile = args.profile or Path(args.db).parent / profile_tag
-            client = LazyClient(lambda: BrowserClient(args.delay, profile, args.browser_channel,
+            client = LazyClient(lambda: (browser_factory or BrowserClient)(args.delay, profile, args.browser_channel,
                                     stealth=args.stealth, proxy=proxy, headless=args.headless, jitter=args.jitter,
                                     verify_timeout=args.verify_timeout, page_timeout=args.page_timeout, on_phase=observer.update)
                                 if args.browser else Client(args.delay))
             observer = LiveStats(args.db, args.stats_every, scope=store.active_scope)
             observer.report()
             observer.start()
-            crawl(store, client, args.max_pages, Path(args.db).parent / 'html', observer=observer)
+            crawl(store, client, args.max_pages, Path(args.db).parent / 'html', observer=observer,
+                  save_html=not args.no_html_cache, progress_every=args.progress_every)
             if store.next_pending():
                 observer.update(phase='ĐÃ ĐẠT GIỚI HẠN LƯỢT CHẠY')
                 logging.info('Đã đạt giới hạn lượt chạy. Chạy lại cùng lệnh hoặc dùng resume để tiếp tục.')

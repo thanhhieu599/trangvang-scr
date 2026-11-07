@@ -1,0 +1,24 @@
+{
+  "type": "synthetic_fixture_only",
+  "ad_delay_seconds": 6,
+  "request_start_interval_seconds": 5,
+  "company_fields_equal": true,
+  "results": {
+    "baseline_browser": {
+      "seconds": 18.439,
+      "pages": 3,
+      "loaded_ad_scripts": 3,
+      "loaded_protected_fixture_scripts": 3,
+      "assets_skipped": 0
+    },
+    "v2_balanced": {
+      "seconds": 10.083,
+      "pages": 3,
+      "loaded_ad_scripts": 0,
+      "loaded_protected_fixture_scripts": 3,
+      "assets_skipped": 3
+    }
+  },
+  "wall_time_ratio": 1.83,
+  "limitations": "Not a live-source benchmark. No guarantee of this speedup on Trang Vang. Browser startup excluded."
+}
