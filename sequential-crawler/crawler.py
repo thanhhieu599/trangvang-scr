@@ -4,12 +4,14 @@ import csv
 import hashlib
 import json
 import logging
+import os
+import random
 import re
 import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
+from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs, unquote
 from urllib.robotparser import RobotFileParser
 
 import requests
@@ -21,6 +23,26 @@ FIELDS = ['name', 'address', 'phones', 'emails', 'websites', 'source_url', 'coll
 
 class Halt(RuntimeError):
     pass
+
+
+def proxy_options(value):
+    """Parse a locally configured proxy without including its secrets in errors."""
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in ('http', 'https', 'socks5') or not parsed.hostname
+                or parsed.port is None or parsed.path not in ('', '/')
+                or parsed.query or parsed.fragment):
+            raise ValueError()
+        host = f'[{parsed.hostname}]' if ':' in parsed.hostname else parsed.hostname
+        options = {'server': f'{parsed.scheme}://{host}:{parsed.port}'}
+        if parsed.username is not None:
+            if parsed.scheme == 'socks5': raise ValueError()
+            options['username'] = unquote(parsed.username)
+            options['password'] = unquote(parsed.password or '')
+        return options
+    except (ValueError, TypeError):
+        raise Halt('Proxy không hợp lệ. Dùng http[s]://[user:password@]host:port '
+                   'hoặc socks5://host:port không xác thực.') from None
 
 
 def clean(value):
@@ -177,22 +199,39 @@ class Client:
 
 class BrowserClient(Client):
     """Visible browser with a dedicated local profile and manual verification."""
-    def __init__(self, delay=5, profile='data/browser-profile', channel=None):
+    def __init__(self, delay=5, profile='data/browser-profile', channel=None,
+                 stealth=False, proxy=None, headless=False, jitter=0):
         super().__init__(delay)
         self.runtime = None
         self.context = None
+        self.jitter = jitter
+        self.headless = headless
         try:
             from playwright.sync_api import sync_playwright
+            stealth_plugin = None
+            if stealth:
+                try:
+                    from playwright_stealth import Stealth
+                    stealth_plugin = Stealth(navigator_languages_override=('vi-VN', 'vi'), navigator_platform=False, navigator_platform_override=None)
+                except ImportError:
+                    raise Halt('Thiếu playwright-stealth. Chạy: pip install -r requirements-stealth.txt') from None
             self.runtime = sync_playwright().start()
-            options = {'headless': False}
+            options = {'headless': headless, 'locale': 'vi-VN', 'viewport': {'width': 1366, 'height': 768}}
+            if proxy: options['proxy'] = proxy
+            if stealth:
+                options['args'] = ['--disable-blink-features=AutomationControlled']
             if channel: options['channel'] = channel
             self.context = self.runtime.chromium.launch_persistent_context(
                 user_data_dir=str(Path(profile).resolve()), **options)
+            if stealth_plugin: stealth_plugin.apply_stealth_sync(self.context)
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
             self.status = None
             self.content_type = ''
             self.page.on('response', self._response)
             self.page.route('**/*', self._route)
+        except Halt:
+            self.close()
+            raise
         except Exception as exc:
             self.close()
             raise Halt('Không mở được trình duyệt. Cài: pip install -r requirements-browser.txt; '
@@ -218,6 +257,22 @@ class BrowserClient(Client):
             return self.page.locator('body').inner_text()
         return self.page.content()
 
+    def _visible_document(self):
+        # Read the rendered DOM, stripping invisible links in a detached copy.
+        # Offscreen links remain if they have layout; this is not viewport filtering.
+        return self.page.evaluate('''() => {
+            const copy = document.documentElement.cloneNode(true);
+            const links = document.querySelectorAll('a[href]');
+            const copies = copy.querySelectorAll('a[href]');
+            links.forEach((link, i) => {
+                const style = getComputedStyle(link);
+                if (!link.getClientRects().length || style.display === 'none' ||
+                    style.visibility === 'hidden' || style.visibility === 'collapse' ||
+                    link.closest('[hidden], [aria-hidden="true"]')) copies[i].remove();
+            });
+            return '<!DOCTYPE html>' + copy.outerHTML;
+        }''')
+
     def _blocked(self, content):
         return self.status == 403 or any(marker in content.lower() for marker in (
             'cf-chl-', 'challenge-platform', 'sorry, you have been blocked',
@@ -226,7 +281,8 @@ class BrowserClient(Client):
 
     def request(self, url):
         try:
-            time.sleep(max(0, self.delay - (time.monotonic() - self.last)))
+            time.sleep(max(0, self.delay - (time.monotonic() - self.last))
+                       + random.uniform(0, getattr(self, 'jitter', 0)))
             self.last = time.monotonic()
             self.status = None
             self.content_type = ''
@@ -235,6 +291,9 @@ class BrowserClient(Client):
             if self.status in (401, 429):
                 raise Halt(f'Website trả HTTP {self.status}; đã giữ tiến độ, không tiếp tục gửi yêu cầu.')
             if self._blocked(content):
+                if getattr(self, 'headless', False):
+                    raise Halt('Gặp trang chặn khi chạy headless. Chạy lại không có --headless '
+                               'để kiểm tra/xác minh thủ công. Đã giữ tiến độ.')
                 logging.warning('Cần thao tác thủ công trong cửa sổ trình duyệt tại %s', url)
                 answer = input('Nếu website cho phép, hoàn tất xác minh trong trình duyệt. '
                                'Sau khi trang thật đã hiện, quay lại đây nhấn Enter; nhập q để dừng: ')
@@ -252,7 +311,7 @@ class BrowserClient(Client):
                 raise Halt(f'Trình duyệt trả HTTP {self.status}; đã giữ tiến độ.')
             if 'robots.txt' not in urlsplit(url).path:
                 self.page.wait_for_selector('h1, a[href*="/gindex/"]', timeout=15000)
-                content = self._document()
+                content = self._visible_document()
             return content
         except Halt:
             raise
@@ -401,9 +460,16 @@ def main():
     parser.add_argument('--browser', action='store_true', help='Mở trình duyệt có giao diện, xác minh thủ công nếu cần')
     parser.add_argument('--browser-channel', choices=['chrome', 'msedge'], help='Dùng Chrome hoặc Edge đã cài; mặc định Chromium')
     parser.add_argument('--profile', help='Thư mục hồ sơ riêng; mặc định browser-profile cạnh DB')
+    parser.add_argument('--stealth', action='store_true', help='Bật playwright-stealth 2.x (cần --browser)')
+    parser.add_argument('--headless', action='store_true', help='Ẩn trình duyệt; dừng nếu cần xác minh')
+    parser.add_argument('--proxy-env', metavar='VARIABLE', help='Tên biến môi trường chứa URL proxy (không nhập mật khẩu vào lệnh)')
+    parser.add_argument('--jitter', type=float, default=0, help='Chờ thêm ngẫu nhiên 0..N giây trong chế độ browser')
     parser.add_argument('--max-pages', type=int, default=0, help='0 = không giới hạn; tính cả trang chi tiết')
     args = parser.parse_args()
     if args.max_pages < 0: parser.error('--max-pages phải >= 0')
+    if not args.browser and (args.stealth or args.headless or args.proxy_env or args.jitter):
+        parser.error('--stealth/--headless/--proxy-env/--jitter cần --browser')
+    if args.jitter < 0 or args.jitter > 300: parser.error('--jitter phải nằm trong 0..300 giây')
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=[logging.StreamHandler(), logging.FileHandler(str(Path(args.db).with_suffix('.log')), encoding='utf-8')])
     store = Store(args.db)
@@ -417,7 +483,15 @@ def main():
             kind = 'company' if path.startswith('/listings/') else 'page' if path.startswith('/categories/') else 'sector' if path.startswith('/gindex/') else 'root'
             store.add(url, kind, url if kind == 'sector' else '', url if kind == 'page' else '')
             store.db.commit()
-            client = (BrowserClient(args.delay, args.profile or Path(args.db).parent / 'browser-profile', args.browser_channel)
+            proxy = None
+            if args.proxy_env:
+                value = os.environ.get(args.proxy_env)
+                if not value: raise Halt('Biến môi trường proxy chưa được cấu hình hoặc đang rỗng.')
+                proxy = proxy_options(value)
+            profile_tag = ('browser-profile-proxy-' + hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()[:12]) if proxy else 'browser-profile'
+            profile = args.profile or Path(args.db).parent / profile_tag
+            client = (BrowserClient(args.delay, profile, args.browser_channel,
+                                    stealth=args.stealth, proxy=proxy, headless=args.headless, jitter=args.jitter)
                       if args.browser else Client(args.delay))
             crawl(store, client, args.max_pages, Path(args.db).parent / 'html')
         elif args.command == 'retry-errors':

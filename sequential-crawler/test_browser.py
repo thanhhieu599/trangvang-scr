@@ -19,12 +19,14 @@ class BrowserTests(unittest.TestCase):
             client.content_type = 'text/html'
         client.page.goto.side_effect = navigate
         client.page.content.return_value = content
+        client.page.evaluate.return_value = content
         return client
 
     def test_manual_verification_then_continue(self):
         client = self.client(403)
         client.page.content.side_effect = ['challenge-platform', '<h1>Home</h1>', '<h1>Home</h1>']
         client.page.wait_for_timeout.side_effect = lambda _: setattr(client, 'status', 200)
+        client.page.evaluate.return_value = '<h1>Home</h1>'
         with patch('builtins.input', return_value='') as prompt:
             self.assertEqual(client.request(BASE), '<h1>Home</h1>')
         prompt.assert_called_once()

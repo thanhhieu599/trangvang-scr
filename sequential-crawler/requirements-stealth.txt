@@ -1,0 +1,2 @@
+-r requirements-browser.txt
+playwright-stealth>=2,<3

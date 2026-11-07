@@ -2,7 +2,7 @@
 
 Python 3.10+. Dùng cho việc thu thập đã được chủ nguồn cho phép.
 
-**Trạng thái ngày 06/11/2026:** đã vượt qua 15 kiểm thử tự động bằng dữ liệu mẫu và mô phỏng trình duyệt. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
+**Trạng thái ngày 07/11/2026:** đã vượt qua 21 kiểm thử tự động và kiểm tra tích hợp Chromium thật trên trang mẫu. Chưa xác minh vượt chặn Cloudflare trên máy người dùng. Đã truy cập được robots.txt và trang chủ bằng chương trình, xác minh HTML thật của lĩnh vực Hóa Chất, phân ngành 47910 và công ty Kemic. Chạy thử đầu cuối trang Kemic đã xuất đủ 5 trường trong sample/companies.csv và sample/companies.xlsx. Chưa chạy toàn bộ danh bạ, chưa bảo đảm mọi công ty có cùng cấu trúc. Yêu cầu curl ban đầu bị Cloudflare chặn, vì vậy khả năng truy cập có thể thay đổi; chương trình dừng nếu bị chặn thay vì vượt chặn.
 
 ## Cài đặt
 
@@ -67,13 +67,45 @@ python -m playwright install chromium
 python crawler.py run --browser --delay 8 --max-pages 20
 ```
 
-Một cửa sổ trình duyệt riêng sẽ mở. Khi gặp trang xác minh, terminal sẽ nhắc bạn hoàn tất thao tác trong cửa sổ đó. Chờ trang nội dung thật xuất hiện, quay lại terminal và nhấn Enter. Nhập `q` hoặc Ctrl+C để dừng. Mỗi lần tải chỉ nhắc một lần; nếu vẫn bị chặn, chương trình dừng và giữ tác vụ ở trạng thái pending. HTTP 401/429 làm dừng ngay. Không có giải CAPTCHA tự động, đổi IP hoặc sửa dấu vân tay.
+Một cửa sổ trình duyệt riêng sẽ mở. Khi gặp trang xác minh, terminal sẽ nhắc bạn hoàn tất thao tác trong cửa sổ đó. Chờ trang nội dung thật xuất hiện, quay lại terminal và nhấn Enter. Nhập `q` hoặc Ctrl+C để dừng. Mỗi lần tải chỉ nhắc một lần; nếu vẫn bị chặn, chương trình dừng và giữ tác vụ ở trạng thái pending. HTTP 401/429 làm dừng ngay. Không có giải CAPTCHA tự động; tùy chọn stealth/proxy được mô tả bên dưới.
 
 Phiên trình duyệt lưu mặc định ở `data/browser-profile/`; các lần chạy sau dùng lại thư mục này. Nếu trước đó chạy với `--db` riêng, truyền **đúng đường dẫn DB cũ** để tiếp tục tiến độ đó. Đóng phiên chương trình trước khi chạy lại. Không dùng thư mục hồ sơ cá nhân của Chrome, không chạy hai tiến trình dùng chung profile. Thư mục này có cookie: không chia sẻ hoặc đưa lên GitHub. Dùng `--profile` nếu muốn chọn thư mục riêng khác.
 
 Chạy trong terminal có thể nhập liệu và máy có giao diện màn hình; không dùng tác vụ nền cho chế độ này. Tốc độ vẫn có giới hạn, robots.txt vẫn được kiểm tra. Khi website từ chối truy cập hoặc robots.txt không cho phép, cần chủ nguồn cho phép truy cập/API. Việc mở Chrome không bảo đảm website sẽ cho phép thu thập.
 
-Đã kiểm thử 15 trường hợp, trong đó 8 trường hợp dùng mô phỏng trình duyệt để kiểm tra xử lý xác minh, dừng, giới hạn tốc độ, robots và điều hướng sai. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+Đã kiểm thử 21 trường hợp về trích xuất, tiến độ, xác minh, giới hạn tốc độ, robots, proxy và tùy chọn trình duyệt; kiểm tra tích hợp Chromium thật xác nhận stealth 2.x khởi tạo được và liên kết ẩn bị loại khỏi bản HTML trích xuất. Chưa kiểm chứng phiên xác minh Cloudflare thực tế trên máy người dùng.
+
+## Tùy chọn stealth, proxy và chờ ngẫu nhiên
+
+Cài phần mở rộng:
+
+```sh
+python -m pip install -r requirements-stealth.txt
+python crawler.py run --browser --browser-channel chrome --stealth --delay 8 --jitter 2 --max-pages 20
+```
+
+`--stealth` áp dụng playwright-stealth 2.x trước khi mở trang và cờ AutomationControlled. Giữ User-Agent của phiên bản Chrome hiện tại; không gán chuỗi Chrome cũ hoặc đổi header ngẫu nhiên giữa các yêu cầu. Ngôn ngữ vi-VN, viewport 1366x768. Đây là thay đổi hành vi trình duyệt, không bảo đảm qua được Cloudflare.
+
+`--jitter 2` thêm 0–2 giây vào thời gian nghỉ còn lại giữa các lần bắt đầu điều hướng; không giảm Crawl-delay. Khi thời gian tải trang dài hơn delay, phần delay đã được đáp ứng trong lúc chờ tải. Trong chế độ browser, các liên kết có CSS/thuộc tính làm ẩn được loại khỏi bản sao HTML; liên kết ở dưới màn hình nhưng có bố cục vẫn được giữ. Đây không phải cơ chế phát hiện mọi loại honeypot. Chế độ HTTP không có lọc theo CSS.
+
+### Proxy của bạn
+
+Cấu hình URL proxy trong biến môi trường tại máy bạn; không gửi thông tin đăng nhập lên chat hoặc commit vào GitHub. Ví dụ PowerShell với các giá trị **thay thế**:
+
+```powershell
+$env:TRANGVANG_PROXY = "http://USER:PASSWORD@HOST:PORT"
+python crawler.py run --browser --browser-channel chrome --stealth --proxy-env TRANGVANG_PROXY --delay 8 --jitter 2 --max-pages 20
+```
+
+Trên bash dùng `export TRANGVANG_PROXY='http://USER:PASSWORD@HOST:PORT'`. Mã hóa URL các ký tự đặc biệt trong username/password (ví dụ @ thành %40). Hỗ trợ HTTP/HTTPS có xác thực hoặc SOCKS5 không xác thực. Proxy phải do bạn cung cấp; dự án không kèm dịch vụ proxy.
+
+Nếu dùng nhà cung cấp proxy có cổng xoay IP, nên chọn chế độ **sticky session** để IP ổn định trong phiên xác minh. Chương trình dùng một endpoint trong một lần chạy, không tự đổi IP khi gặp 403/429 và không có pool proxy nội bộ. Thay endpoint/phiên proxy ở nhà cung cấp rồi chạy lại nếu cần; không có bảo đảm việc đổi IP sẽ hết chặn. Profile mặc định được tách theo cấu hình proxy, không trộn với phiên truy cập trực tiếp. Cookie cũ có thể mất hiệu lực khi IP thay đổi.
+
+### Headless
+
+Chỉ thêm `--headless` khi đã kiểm tra truy cập ổn định. Chế độ này dừng ngay khi gặp trang chặn vì không có cửa sổ để bạn xác minh. Khi dừng, bỏ `--headless` rồi chạy lại cùng DB/profile để kiểm tra. Không dùng `networkidle` vì trang có quảng cáo có thể không bao giờ hết kết nối; chương trình chờ DOM và phần tử nội dung.
+
+Mặc định vẫn có giao diện để bạn nhìn thấy lỗi. Không mô phỏng chuột ngẫu nhiên hoặc mua dịch vụ giải CAPTCHA trong bản này. Proxy chưa được kiểm tra trên dịch vụ thật vì chưa có endpoint do người dùng cấu hình; kiểm thử chỉ xác minh cách cấu hình và tách thông tin đăng nhập.
 
 ## Dữ liệu và tiến độ
 
@@ -96,7 +128,7 @@ retry-errors chỉ đưa tác vụ lỗi về pending; sau đó chạy run. Lỗ
 
 ## Quy tắc truy cập
 
-Không dùng proxy xoay vòng, giả dấu vân tay, giải CAPTCHA tự động hoặc vượt chặn. Chế độ HTTP dùng User-Agent AuthorizedDirectoryCollector/1.0; chế độ browser dùng trình duyệt thông thường với hồ sơ riêng. Kiểm tra robots.txt đầu phiên, theo crawl-delay/request-rate, tốc độ tối thiểu 3 giây/yêu cầu, mặc định 5 giây. Thử lại tối đa 4 lần với lỗi mạng/5xx. Chế độ HTTP dừng ở HTTP 401/403/429 hoặc dấu hiệu CAPTCHA/Cloudflare. Chế độ browser cho phép xác minh thủ công một lần khi gặp trang chặn; nếu vẫn bị chặn thì dừng. robots.txt không hợp lệ làm dừng ở cả hai chế độ. Chuyển hướng cũng dừng để kiểm tra, tránh truy cập nhầm nơi; chỉ thu thập cùng domain, không truy cập website ngoài của từng công ty.
+Stealth và proxy là tùy chọn; không có bộ giải CAPTCHA tự động và không tự thử lại vô hạn khi bị chặn. Chế độ HTTP dùng User-Agent AuthorizedDirectoryCollector/1.0; chế độ browser dùng trình duyệt thông thường với hồ sơ riêng. Kiểm tra robots.txt đầu phiên, theo crawl-delay/request-rate, tốc độ tối thiểu 3 giây/yêu cầu, mặc định 5 giây. Thử lại tối đa 4 lần với lỗi mạng/5xx. Chế độ HTTP dừng ở HTTP 401/403/429 hoặc dấu hiệu CAPTCHA/Cloudflare. Chế độ browser cho phép xác minh thủ công một lần khi gặp trang chặn; nếu vẫn bị chặn thì dừng. robots.txt không hợp lệ làm dừng ở cả hai chế độ. Chuyển hướng cũng dừng để kiểm tra, tránh truy cập nhầm nơi; chỉ thu thập cùng domain, không truy cập website ngoài của từng công ty.
 
 Nếu vẫn bị chặn, cần chủ website cấp API, bản xuất dữ liệu hoặc cho phép IP/User-Agent của bạn. Tiếp tục cùng DB sau khi quyền truy cập đã được mở. Bộ này không bảo đảm vượt chống bot.
 
