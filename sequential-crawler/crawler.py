@@ -487,8 +487,8 @@ def crawl(store, client, limit, cache):
                 children = list(linked(listing_scope, r'^/listings/\d+', url))
                 if not children: raise ValueError('Không tìm thấy công ty /listings/; cần kiểm tra HTML')
                 for dest, name in children: store.add(dest, 'company', sector, category, depth + 1)
-                # Same depth: complete companies on this page before subsequent pages.
-                for dest in next_pages(soup, url): store.add(dest, 'page', sector, category, depth)
+                # Pagination outranks sibling categories but follows this page's companies.
+                for dest in next_pages(soup, url): store.add(dest, 'page', sector, category, depth + 0.5)
             store.db.execute("UPDATE tasks SET status='done',error=NULL WHERE id=?", (task_id,))
             store.db.commit()
             done += 1

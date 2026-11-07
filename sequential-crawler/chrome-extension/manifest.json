@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Trang Vang - Sequential Collector",
+  "version": "1.0.0",
+  "minimum_chrome_version": "120",
+  "description": "Thu thập tuần tự trong Chrome hiện tại, lưu trên máy và xuất CSV.",
+  "permissions": ["scripting", "alarms", "unlimitedStorage"],
+  "host_permissions": ["https://trangvangvietnam.com/*", "https://www.trangvangvietnam.com/*"],
+  "background": {"service_worker": "worker.js", "type": "module"},
+  "action": {"default_popup": "popup.html"}
+}

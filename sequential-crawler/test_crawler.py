@@ -57,6 +57,22 @@ class Tests(unittest.TestCase):
             self.assertTrue((Path(d)/'export/companies.xlsx').exists())
             store.db.close()
 
+    def test_finish_category_pagination_before_sibling(self):
+        category = BASE+'categories/1/a.html'
+        sibling = BASE+'categories/2/b.html'
+        root = BASE+'gindex/7/chem'
+        pages={root:'<a href="'+category+'">A</a><a href="'+sibling+'">B</a>',
+            category:'<a href="'+COMPANY+'">First</a><a href="?page=2">Tiếp</a>',
+            category+'?page=2':'<a href="'+COMPANY+'">First again</a>',
+            sibling:'<a href="'+COMPANY+'">First again</a>',COMPANY:CONTACT}
+        client=Mock();client.get.side_effect=lambda url:pages[url]
+        with tempfile.TemporaryDirectory() as d:
+            store=Store(Path(d)/'state.db');store.add(root,'sector','Chem');store.db.commit()
+            crawl(store,client,0,Path(d)/'html')
+            calls=[call.args[0] for call in client.get.call_args_list]
+            self.assertLess(calls.index(category+'?page=2'),calls.index(sibling))
+            store.db.close()
+
     def test_halt_keeps_pending(self):
         with tempfile.TemporaryDirectory() as d:
             store = Store(Path(d)/'state.db')

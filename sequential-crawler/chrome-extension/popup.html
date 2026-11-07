@@ -1,0 +1,11 @@
+<!doctype html><html lang="vi"><meta charset="utf-8"><title>Trang Vàng Collector</title>
+<style>body{font:14px system-ui;width:360px;padding:14px;color:#17202a}h1{font-size:18px}label{display:block;margin:10px 0}input{width:70px}button{padding:9px;margin:3px 0}#status{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5ef;padding:10px}small{display:block;margin:10px 0}</style>
+<h1>Trang Vàng Collector</h1>
+<p>Dùng tab Trang Vàng hiện tại. Giữ tab mở trong lúc thu thập.</p>
+<label>Nghỉ giữa các trang (≥30 giây) <input id="delay" type="number" min="30" value="30"></label>
+<label>Số trang mỗi lượt (0 = tất cả) <input id="limit" type="number" min="0" value="20"></label>
+<button id="start">Bắt đầu từ tab này</button> <button id="resume">Tiếp tục</button>
+<button id="pause">Tạm dừng</button> <button id="export">Xuất CSV</button>
+<small>Tự duyệt ngành → phân ngành → công ty. Khi bị chặn sẽ dừng. Dữ liệu chỉ lưu trên máy.</small>
+<p id="status" role="status">Đang đọc tiến độ…</p>
+<script type="module" src="popup.js"></script></html>
